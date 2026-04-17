@@ -18,7 +18,7 @@ Baseline dependencies installed and validated on the host machine.
 - [x] Rust + Node toolchains ready
 - [x] Tauri 2 + Svelte scaffold generated (demo runs)
 
-**Validation gate:** `whisper-cli`, `ffmpeg`, and `npm run tauri dev` all work from the terminal.
+**Validation gate:** `whisper-cli`, `ffmpeg`, and `bun run tauri dev` all work from the terminal.
 
 ---
 

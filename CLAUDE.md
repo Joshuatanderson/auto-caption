@@ -45,7 +45,7 @@ See ROADMAP.md for what's built vs what's next.
 
 ## Hard dependencies on the host machine
 
-- macOS 15+ (Sequoia)
+- macOS 26+ (Tahoe)
 - Apple Silicon
 - `whisper-cli` installed via Homebrew (`brew install whisper-cpp`)
 - `ffmpeg` with libass + fontconfig (`brew install ffmpeg`)
@@ -56,7 +56,8 @@ See ROADMAP.md for what's built vs what's next.
 
 - **`src-tauri/`** — Rust backend. Commands exposed to the frontend go in `lib.rs`.
 - **`src/`** — Svelte frontend. One screen, no routing.
-- **Test artifacts** — sample videos and expected outputs in `fixtures/`, gitignored by default.
+- **Test artifacts** — sample videos and expected outputs in `test-artifacts/`, gitignored.
+- **Transcripts** — ad-hoc transcripts produced during dev live in `transcripts/`, gitignored.
 
 ## Opinionated defaults
 
@@ -69,3 +70,32 @@ See ROADMAP.md for what's built vs what's next.
 - Is this adding complexity to the MVP, or is it genuinely required for the next validation step? Default to deferring.
 - Does this hide state that should be visible? If yes, don't add it.
 - Could this be solved by a style parameter change instead of a code change? Prefer the parameter.
+
+<!-- hippo:start -->
+## Project Memory (Hippo)
+
+Before starting work, load relevant context:
+```bash
+hippo context --auto --budget 1500
+```
+
+When you learn something important:
+```bash
+hippo remember "<lesson>"
+```
+
+When you hit an error or discover a gotcha:
+```bash
+hippo remember "<what went wrong and why>" --error
+```
+
+After significant discussions or decisions, capture context:
+```bash
+hippo capture --stdin <<< 'summary of what was decided'
+```
+
+After completing work successfully:
+```bash
+hippo outcome --good
+```
+<!-- hippo:end -->
