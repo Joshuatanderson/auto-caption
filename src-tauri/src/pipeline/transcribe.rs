@@ -14,6 +14,10 @@ pub fn whisper_json_output_path(wav_path: &Path) -> PathBuf {
 /// Flags used:
 ///   -ojf  = output JSON (full, includes per-token timing + probabilities)
 ///   -of   = output file path WITHOUT extension (whisper appends .json)
+///   --dtw = post-pass token-level alignment via DTW on cross-attention
+///           heads; tightens per-token timestamps from ~100–300 ms typical
+///           down to ~50–100 ms. The preset `large.v3.turbo` matches the
+///           alignment-head layout of the large-v3-turbo model we load.
 ///
 /// `--output-dir` does NOT exist in whisper-cli; `-of` is the correct way to
 /// control where the output file lands.
@@ -25,6 +29,8 @@ pub fn build_whisper_args(wav_path: &Path, model_path: &Path, output_stem: &Path
         "--model".to_string(),
         model_path.to_string_lossy().into_owned(),
         "-ojf".to_string(),  // full JSON: includes tokens with timestamps + probabilities
+        "--dtw".to_string(),
+        "large.v3.turbo".to_string(),
         "-of".to_string(),
         output_stem.to_string_lossy().into_owned(),
         wav_path.to_string_lossy().into_owned(),
@@ -102,6 +108,10 @@ mod tests {
         assert!(args.contains(&"-ojf".to_string()));
         assert!(args.contains(&"-of".to_string()));
         assert!(args.contains(&"--model".to_string()));
+        // DTW preset must be wired up for tight per-token timestamps
+        assert!(args.contains(&"--dtw".to_string()));
+        let dtw_pos = args.iter().position(|a| a == "--dtw").unwrap();
+        assert_eq!(args[dtw_pos + 1], "large.v3.turbo");
         // must NOT use the old broken flag
         assert!(!args.contains(&"--output-dir".to_string()));
         assert!(!args.contains(&"--output-words".to_string()));
