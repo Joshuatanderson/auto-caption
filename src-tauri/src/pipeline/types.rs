@@ -80,6 +80,12 @@ pub struct AssStyle {
     pub outline_width: f32,
     pub margin_v: u32,
     pub words_per_phrase: usize,
+    /// Lead-in before the first word of each phrase lights up, in milliseconds.
+    /// Gives the viewer's eye time to find the new caption before any word
+    /// flashes to the accent color. Without this, the first word feels "early"
+    /// at phrase boundaries because the text pops in and highlights at the
+    /// same instant.
+    pub first_word_lead_in_ms: u32,
 }
 
 impl Default for AssStyle {
@@ -93,6 +99,7 @@ impl Default for AssStyle {
             outline_width: 3.0,
             margin_v: 80,
             words_per_phrase: 5,
+            first_word_lead_in_ms: 100,
         }
     }
 }

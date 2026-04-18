@@ -77,9 +77,18 @@ fn ms_to_ass(ms: i64) -> String {
 /// Emits one word of a phrase wrapped in `\t` transforms that flash its color
 /// to the accent color during its active time window. Times are milliseconds
 /// relative to the enclosing Dialogue event's Start.
-fn word_span(word: &Word, phrase_start_ms: i64, style: &AssStyle) -> String {
-    let rel_start = (word.start_ms - phrase_start_ms).max(0);
-    let rel_end = (word.end_ms - phrase_start_ms).max(rel_start);
+///
+/// The first word of a phrase gets a small lead-in delay (from
+/// `style.first_word_lead_in_ms`) so the viewer can orient to the new caption
+/// text before it highlights. Clamped so it never pushes past the word's end.
+fn word_span(word: &Word, phrase_start_ms: i64, style: &AssStyle, is_first_in_phrase: bool) -> String {
+    let natural_start = (word.start_ms - phrase_start_ms).max(0);
+    let rel_end = (word.end_ms - phrase_start_ms).max(natural_start);
+    let rel_start = if is_first_in_phrase {
+        (natural_start + style.first_word_lead_in_ms as i64).min(rel_end)
+    } else {
+        natural_start
+    };
     format!(
         "{{\\t({rs},{rs},\\c{accent})\\t({re},{re},\\c{primary})}}{text}",
         rs = rel_start,
@@ -104,7 +113,8 @@ pub fn phrase_to_ass_event(phrase: &Phrase, style: &AssStyle) -> String {
     let text: Vec<String> = phrase
         .words
         .iter()
-        .map(|w| word_span(w, phrase_start_ms, style))
+        .enumerate()
+        .map(|(i, w)| word_span(w, phrase_start_ms, style, i == 0))
         .collect();
 
     format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{}\n", text.join(" "))
@@ -342,12 +352,12 @@ mod tests {
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
-        let style = AssStyle::default();
+        let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
         let event = phrase_to_ass_event(&phrases[0], &style);
         assert!(event.starts_with("Dialogue:"));
         assert!(event.contains("hello"));
         assert!(event.contains("world"));
-        // First word's transform fires at t=0 relative to event start
+        // With no lead-in, first word's transform fires at t=0 relative to event start
         assert!(event.contains(&format!("\\t(0,0,\\c{})", style.accent_color)));
         // Each word gets its own open + close transform pair → 2 words × 2 transforms = 4 `\t(`
         assert_eq!(event.matches("\\t(").count(), 4);
@@ -369,19 +379,58 @@ mod tests {
 
     #[test]
     fn transform_times_are_relative_to_phrase_start() {
-        // Phrase starts at t=5000ms absolute; first word's transform must still fire at 0.
+        // Phrase starts at t=5000ms absolute; with lead-in disabled, first word's
+        // transform must fire at relative t=0.
         let tokens = vec![
             tok(" first",  5000, 5400, 0.9),
             tok(" second", 5400, 5900, 0.9),
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
-        let style = AssStyle::default();
+        let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
         let event = phrase_to_ass_event(&phrases[0], &style);
         assert!(event.contains(&format!("\\t(0,0,\\c{})", style.accent_color)));
         assert!(event.contains(&format!("\\t(400,400,\\c{})", style.primary_color)));
         assert!(event.contains(&format!("\\t(400,400,\\c{})", style.accent_color)));
         assert!(event.contains(&format!("\\t(900,900,\\c{})", style.primary_color)));
+    }
+
+    #[test]
+    fn first_word_respects_lead_in() {
+        // Default lead-in of 100ms pushes the first word's highlight to t=100,
+        // while subsequent words keep their natural timing.
+        let tokens = vec![
+            tok(" first",  0,   500,  0.9),
+            tok(" second", 500, 1000, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();  // first_word_lead_in_ms = 100
+        let event = phrase_to_ass_event(&phrases[0], &style);
+        // First word: delayed by lead-in
+        assert!(event.contains(&format!("\\t(100,100,\\c{})", style.accent_color)));
+        // First word still closes at its natural end
+        assert!(event.contains(&format!("\\t(500,500,\\c{})", style.primary_color)));
+        // Second word unaffected by lead-in
+        assert!(event.contains(&format!("\\t(500,500,\\c{})", style.accent_color)));
+        assert!(event.contains(&format!("\\t(1000,1000,\\c{})", style.primary_color)));
+    }
+
+    #[test]
+    fn first_word_lead_in_clamped_when_word_is_shorter() {
+        // A very short first word (50ms) can't absorb a 100ms lead-in.
+        // The highlight start should clamp to the word's end so rendering stays valid.
+        let tokens = vec![
+            tok(" short", 0,  50,  0.9),
+            tok(" next",  50, 500, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();  // lead-in = 100, word is 50ms
+        let event = phrase_to_ass_event(&phrases[0], &style);
+        // Clamped: start == end == 50ms (effectively no highlight for this short word)
+        assert!(event.contains(&format!("\\t(50,50,\\c{})", style.accent_color)));
+        assert!(event.contains(&format!("\\t(50,50,\\c{})", style.primary_color)));
     }
 
     #[test]
