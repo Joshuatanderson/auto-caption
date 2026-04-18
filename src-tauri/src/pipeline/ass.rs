@@ -1,0 +1,323 @@
+use std::path::{Path, PathBuf};
+
+use crate::pipeline::types::{AssStyle, Phrase, StageError, WhisperOutput, Word};
+
+/// Extracts all word tokens from the whisper output, filtering noise tokens.
+/// Whisper tokens can include special markers ([_BEG_], [_TT_N]) — skip those.
+pub fn flatten_words(output: &WhisperOutput) -> Vec<Word> {
+    output
+        .transcription
+        .iter()
+        .flat_map(|seg| seg.tokens.iter())
+        .filter(|t| {
+            let trimmed = t.text.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('[') && !trimmed.starts_with('<')
+        })
+        .map(|t| Word {
+            text: t.text.trim().to_string(),
+            start_ms: t.offsets.from,
+            end_ms: t.offsets.to,
+            prob: t.p,
+        })
+        .collect()
+}
+
+/// Groups words into phrases of approximately `target_size` words.
+/// Accent word = highest probability word in the phrase.
+pub fn words_to_phrases(words: &[Word], target_size: usize) -> Vec<Phrase> {
+    if words.is_empty() {
+        return vec![];
+    }
+    words
+        .chunks(target_size)
+        .map(|chunk| {
+            let accent_index = chunk
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.prob.partial_cmp(&b.prob).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            Phrase { words: chunk.to_vec(), accent_index }
+        })
+        .collect()
+}
+
+/// Formats seconds as ASS timestamp: `h:mm:ss.cs` (centiseconds). Pure function.
+pub fn seconds_to_ass_timestamp(secs: f64) -> String {
+    let total_cs = (secs * 100.0).round() as u64;
+    let cs = total_cs % 100;
+    let total_s = total_cs / 100;
+    let s = total_s % 60;
+    let m = (total_s / 60) % 60;
+    let h = total_s / 3600;
+    format!("{h}:{m:02}:{s:02}.{cs:02}")
+}
+
+fn ms_to_ass(ms: i64) -> String {
+    seconds_to_ass_timestamp(ms as f64 / 1000.0)
+}
+
+/// Renders a single phrase as one ASS Dialogue line.
+/// The accent word is wrapped in a color override tag.
+pub fn phrase_to_ass_event(phrase: &Phrase, style: &AssStyle) -> String {
+    if phrase.words.is_empty() {
+        return String::new();
+    }
+    let start = ms_to_ass(phrase.words.first().unwrap().start_ms);
+    let end = ms_to_ass(phrase.words.last().unwrap().end_ms);
+
+    let text: Vec<String> = phrase
+        .words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            if i == phrase.accent_index {
+                format!(
+                    "{{\\c{accent}}}{}{{\\c{primary}}}",
+                    w.text,
+                    accent = style.accent_color,
+                    primary = style.primary_color
+                )
+            } else {
+                w.text.clone()
+            }
+        })
+        .collect();
+
+    format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{}\n", text.join(" "))
+}
+
+/// Builds the ASS header block. Pure function.
+pub fn build_ass_header(style: &AssStyle) -> String {
+    format!(
+        "[Script Info]\n\
+         ScriptType: v4.00+\n\
+         PlayResX: 1920\n\
+         PlayResY: 1080\n\
+         ScaledBorderAndShadow: yes\n\
+         \n\
+         [V4+ Styles]\n\
+         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, \
+                 Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, \
+                 Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
+         Style: Default,{font},{size},{primary},&H000000FF,{outline},&H00000000,\
+                -1,0,0,0,100,100,0,0,1,{outline_w:.1},0,2,10,10,{margin_v},1\n\
+         \n\
+         [Events]\n\
+         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        font = style.font_name,
+        size = style.font_size,
+        primary = style.primary_color,
+        outline = style.outline_color,
+        outline_w = style.outline_width,
+        margin_v = style.margin_v,
+    )
+}
+
+/// Converts a WhisperOutput to a complete ASS file string. Fully pure.
+pub fn generate_ass(output: &WhisperOutput, style: &AssStyle) -> String {
+    let words = flatten_words(output);
+    let phrases = words_to_phrases(&words, style.words_per_phrase);
+    let mut ass = build_ass_header(style);
+    for phrase in &phrases {
+        ass.push_str(&phrase_to_ass_event(phrase, style));
+    }
+    ass
+}
+
+pub fn write_ass_file(video_path: &Path, content: &str) -> Result<PathBuf, StageError> {
+    let out = video_path.with_extension("ass");
+    std::fs::write(&out, content).map_err(|e| StageError {
+        stage: "generate_ass".to_string(),
+        message: format!("Failed to write .ass file: {e}"),
+        stderr: None,
+    })?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::types::{AssStyle, WhisperOutput, WhisperSegment, WhisperToken, WOffsets, WTimestamps};
+
+    fn ts(from: &str, to: &str) -> WTimestamps {
+        WTimestamps { from: from.to_string(), to: to.to_string() }
+    }
+
+    fn off(from: i64, to: i64) -> WOffsets {
+        WOffsets { from, to }
+    }
+
+    fn tok(text: &str, from_ms: i64, to_ms: i64, prob: f64) -> WhisperToken {
+        WhisperToken { text: text.to_string(), timestamps: ts("", ""), offsets: off(from_ms, to_ms), id: 0, p: prob }
+    }
+
+    fn make_output(tokens: Vec<WhisperToken>) -> WhisperOutput {
+        WhisperOutput {
+            transcription: vec![WhisperSegment {
+                timestamps: ts("00:00:00,000", "00:00:10,000"),
+                offsets: off(0, 10000),
+                text: "test".to_string(),
+                tokens,
+            }],
+        }
+    }
+
+    // --- seconds_to_ass_timestamp ---
+
+    #[test]
+    fn timestamp_zero() {
+        assert_eq!(seconds_to_ass_timestamp(0.0), "0:00:00.00");
+    }
+
+    #[test]
+    fn timestamp_one_minute_plus() {
+        assert_eq!(seconds_to_ass_timestamp(61.5), "0:01:01.50");
+    }
+
+    #[test]
+    fn timestamp_over_one_hour() {
+        assert_eq!(seconds_to_ass_timestamp(3661.0), "1:01:01.00");
+    }
+
+    #[test]
+    fn timestamp_centiseconds() {
+        assert_eq!(seconds_to_ass_timestamp(1.05), "0:00:01.05");
+    }
+
+    // --- flatten_words ---
+
+    #[test]
+    fn flatten_words_filters_special_tokens() {
+        let tokens = vec![
+            tok("[_BEG_]", 0, 0, 1.0),
+            tok(" Hello", 0, 500, 0.9),
+            tok("[_TT_50]", 500, 500, 1.0),
+            tok(" world", 500, 1000, 0.8),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text, "Hello");
+        assert_eq!(words[1].text, "world");
+    }
+
+    #[test]
+    fn flatten_words_trims_leading_space() {
+        let tokens = vec![tok(" Hello", 0, 500, 0.9)];
+        let words = flatten_words(&make_output(tokens));
+        assert_eq!(words[0].text, "Hello");
+    }
+
+    // --- words_to_phrases ---
+
+    #[test]
+    fn phrases_even_split() {
+        let tokens: Vec<_> = (0..10).map(|i| tok("w", i * 100, (i + 1) * 100, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        assert_eq!(phrases.len(), 2);
+        assert_eq!(phrases[0].words.len(), 5);
+        assert_eq!(phrases[1].words.len(), 5);
+    }
+
+    #[test]
+    fn phrases_remainder() {
+        let tokens: Vec<_> = (0..7).map(|i| tok("w", i * 100, (i + 1) * 100, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        assert_eq!(phrases.len(), 2);
+        assert_eq!(phrases[1].words.len(), 2);
+    }
+
+    #[test]
+    fn phrases_empty_input() {
+        let phrases = words_to_phrases(&[], 5);
+        assert!(phrases.is_empty());
+    }
+
+    #[test]
+    fn accent_is_highest_probability() {
+        let tokens = vec![
+            tok("low",  0, 500, 0.5),
+            tok("high", 500, 1000, 0.95),
+            tok("mid",  1000, 1500, 0.7),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        assert_eq!(phrases[0].accent_index, 1);
+    }
+
+    // --- phrase_to_ass_event ---
+
+    #[test]
+    fn accent_word_wrapped_in_color_override() {
+        let tokens = vec![
+            tok("plain",  0, 500, 0.5),
+            tok("ACCENT", 500, 1000, 0.99),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();
+        let event = phrase_to_ass_event(&phrases[0], &style);
+        assert!(event.contains("ACCENT"));
+        assert!(event.contains("{\\c"));  // color override present
+        assert!(event.starts_with("Dialogue:"));
+    }
+
+    #[test]
+    fn only_one_color_override_per_phrase() {
+        let tokens: Vec<_> = (0..5).map(|i| tok("w", i * 100, (i + 1) * 100, 0.5)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();
+        let event = phrase_to_ass_event(&phrases[0], &style);
+        // There's exactly one accent open tag and one reset tag
+        let open_count = event.matches(&format!("{{\\c{}}}", style.accent_color)).count();
+        assert_eq!(open_count, 1);
+    }
+
+    // --- build_ass_header ---
+
+    #[test]
+    fn header_contains_script_info() {
+        let style = AssStyle::default();
+        let header = build_ass_header(&style);
+        assert!(header.contains("[Script Info]"));
+        assert!(header.contains("[V4+ Styles]"));
+        assert!(header.contains("[Events]"));
+    }
+
+    #[test]
+    fn header_contains_style_values() {
+        let style = AssStyle::default();
+        let header = build_ass_header(&style);
+        assert!(header.contains("Arial"));
+        assert!(header.contains("72"));
+    }
+
+    // --- generate_ass (end-to-end) ---
+
+    #[test]
+    fn generate_ass_correct_dialogue_count() {
+        // 6 words, target 5 → 2 phrases → 2 Dialogue lines
+        let tokens: Vec<_> = (0..6)
+            .map(|i| tok("word", i * 500, (i + 1) * 500, 0.9))
+            .collect();
+        let output = make_output(tokens);
+        let style = AssStyle::default();
+        let ass = generate_ass(&output, &style);
+        assert_eq!(ass.matches("Dialogue:").count(), 2);
+    }
+
+    #[test]
+    fn generate_ass_well_formed() {
+        let tokens: Vec<_> = (0..5)
+            .map(|i| tok("hello", i * 500, (i + 1) * 500, 0.9))
+            .collect();
+        let output = make_output(tokens);
+        let style = AssStyle::default();
+        let ass = generate_ass(&output, &style);
+        assert!(ass.starts_with("[Script Info]"));
+        assert!(ass.contains("Dialogue:"));
+    }
+}
