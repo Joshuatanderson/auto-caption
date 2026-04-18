@@ -74,50 +74,92 @@ fn ms_to_ass(ms: i64) -> String {
     seconds_to_ass_timestamp(ms as f64 / 1000.0)
 }
 
-/// Emits one word of a phrase wrapped in `\t` transforms that flash its color
-/// to the accent color during its active time window. Times are milliseconds
-/// relative to the enclosing Dialogue event's Start.
-///
-/// The first word of a phrase gets a small lead-in delay (from
-/// `style.first_word_lead_in_ms`) so the viewer can orient to the new caption
-/// text before it highlights. Clamped so it never pushes past the word's end.
-fn word_span(word: &Word, phrase_start_ms: i64, style: &AssStyle, is_first_in_phrase: bool) -> String {
-    let natural_start = (word.start_ms - phrase_start_ms).max(0);
-    let rel_end = (word.end_ms - phrase_start_ms).max(natural_start);
-    let rel_start = if is_first_in_phrase {
-        (natural_start + style.first_word_lead_in_ms as i64).min(rel_end)
-    } else {
-        natural_start
-    };
-    format!(
-        "{{\\t({rs},{rs},\\c{accent})\\t({re},{re},\\c{primary})}}{text}",
-        rs = rel_start,
-        re = rel_end,
-        accent = style.accent_color,
-        primary = style.primary_color,
-        text = word.text,
-    )
+/// Emits one Dialogue line spanning [start_ms, end_ms] showing the whole
+/// phrase text, with at most one word statically wrapped in the accent color.
+/// `accent_index = None` emits the phrase with no word highlighted (lead-in).
+fn build_dialogue_line(
+    start_ms: i64,
+    end_ms: i64,
+    words: &[Word],
+    accent_index: Option<usize>,
+    style: &AssStyle,
+) -> String {
+    let start = ms_to_ass(start_ms);
+    let end = ms_to_ass(end_ms);
+    let text: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            if Some(i) == accent_index {
+                format!(
+                    "{{\\c{accent}}}{}{{\\c{primary}}}",
+                    w.text,
+                    accent = style.accent_color,
+                    primary = style.primary_color,
+                )
+            } else {
+                w.text.clone()
+            }
+        })
+        .collect();
+    format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{}\n", text.join(" "))
 }
 
-/// Renders a single phrase as one ASS Dialogue line.
-/// Each word is wrapped in per-word `\t` transforms so the highlight follows
-/// the currently-spoken word as playback progresses.
-pub fn phrase_to_ass_event(phrase: &Phrase, style: &AssStyle) -> String {
+/// Renders a phrase as a sequence of Dialogue lines — one per word, each
+/// statically highlighting that word. Timed so exactly one event is on screen
+/// at any moment the phrase is visible, and the accent visibly moves.
+///
+/// Using per-word Dialogue events (rather than `\t` animations inside a single
+/// event) avoids a libass quirk where `\t` transforms cascade forward across
+/// spans in the same line, producing an "all words light up then peel off"
+/// rendering instead of a classic moving highlight.
+///
+/// If `style.first_word_lead_in_ms > 0`, an initial lead-in event (phrase text
+/// with no word accented) is emitted so the viewer's eye can find the new
+/// caption before any word lights up.
+pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
     if phrase.words.is_empty() {
         return String::new();
     }
     let phrase_start_ms = phrase.words.first().unwrap().start_ms;
-    let start = ms_to_ass(phrase_start_ms);
-    let end = ms_to_ass(phrase.words.last().unwrap().end_ms);
+    let phrase_end_ms = phrase.words.last().unwrap().end_ms;
+    let lead_in_ms = style.first_word_lead_in_ms as i64;
 
-    let text: Vec<String> = phrase
-        .words
-        .iter()
-        .enumerate()
-        .map(|(i, w)| word_span(w, phrase_start_ms, style, i == 0))
-        .collect();
+    let mut out = String::new();
 
-    format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{}\n", text.join(" "))
+    if lead_in_ms > 0 {
+        out.push_str(&build_dialogue_line(
+            phrase_start_ms,
+            phrase_start_ms + lead_in_ms,
+            &phrase.words,
+            None,
+            style,
+        ));
+    }
+
+    for (i, word) in phrase.words.iter().enumerate() {
+        let start = if i == 0 {
+            phrase_start_ms + lead_in_ms
+        } else {
+            word.start_ms
+        };
+        let end = phrase
+            .words
+            .get(i + 1)
+            .map(|w| w.start_ms)
+            .unwrap_or(phrase_end_ms);
+        if start >= end {
+            continue;
+        }
+        out.push_str(&build_dialogue_line(
+            start,
+            end,
+            &phrase.words,
+            Some(i),
+            style,
+        ));
+    }
+    out
 }
 
 /// Builds the ASS header block. Pure function.
@@ -153,7 +195,7 @@ pub fn generate_ass(output: &WhisperOutput, style: &AssStyle) -> String {
     let phrases = words_to_phrases(&words, style.words_per_phrase);
     let mut ass = build_ass_header(style);
     for phrase in &phrases {
-        ass.push_str(&phrase_to_ass_event(phrase, style));
+        ass.push_str(&phrase_to_ass_events(phrase, style));
     }
     ass
 }
@@ -342,112 +384,127 @@ mod tests {
         assert_eq!(phrases[0].accent_index, 1);
     }
 
-    // --- phrase_to_ass_event ---
+    // --- phrase_to_ass_events ---
+
+    fn dialogue_count(output: &str) -> usize {
+        output.matches("Dialogue:").count()
+    }
 
     #[test]
-    fn every_word_has_timed_color_transform() {
+    fn phrase_emits_one_event_per_word_plus_lead_in() {
+        let tokens: Vec<_> = (0..5).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();  // lead_in = 100
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        // 1 lead-in event + 5 word events
+        assert_eq!(dialogue_count(&out), 6);
+    }
+
+    #[test]
+    fn no_lead_in_skips_plain_event() {
+        let tokens: Vec<_> = (0..5).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        // 0 lead-in + 5 word events
+        assert_eq!(dialogue_count(&out), 5);
+    }
+
+    #[test]
+    fn each_word_event_has_exactly_one_accent_wrap() {
+        let tokens: Vec<_> = (0..3).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        // Each word event has one open accent and one close primary
+        assert_eq!(out.matches(&format!("{{\\c{}}}", style.accent_color)).count(), 3);
+        assert_eq!(out.matches(&format!("{{\\c{}}}", style.primary_color)).count(), 3);
+    }
+
+    #[test]
+    fn lead_in_event_has_no_accent_wrap() {
         let tokens = vec![
-            tok(" hello", 0, 500, 0.9),
-            tok(" world", 500, 1000, 0.9),
+            tok(" alpha", 0, 500, 0.9),
+            tok(" beta",  500, 1000, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();  // lead_in = 100
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        // Lead-in event is the first Dialogue line and has no accent wrap
+        let first_line = out.lines().next().unwrap();
+        assert!(first_line.starts_with("Dialogue:"));
+        assert!(!first_line.contains(&format!("{{\\c{}}}", style.accent_color)));
+        // It still contains the phrase text in full
+        assert!(first_line.contains("alpha"));
+        assert!(first_line.contains("beta"));
+    }
+
+    #[test]
+    fn accent_moves_across_events() {
+        // For a 3-word phrase with lead-in disabled, event N should accent word N.
+        let tokens = vec![
+            tok(" ALPHA", 0,   400, 0.9),
+            tok(" BETA",  400, 800, 0.9),
+            tok(" GAMMA", 800, 1200, 0.9),
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
-        let event = phrase_to_ass_event(&phrases[0], &style);
-        assert!(event.starts_with("Dialogue:"));
-        assert!(event.contains("hello"));
-        assert!(event.contains("world"));
-        // With no lead-in, first word's transform fires at t=0 relative to event start
-        assert!(event.contains(&format!("\\t(0,0,\\c{})", style.accent_color)));
-        // Each word gets its own open + close transform pair → 2 words × 2 transforms = 4 `\t(`
-        assert_eq!(event.matches("\\t(").count(), 4);
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("Dialogue:")).collect();
+        assert_eq!(lines.len(), 3);
+        // Event 0 wraps ALPHA only
+        assert!(lines[0].contains(&format!("{{\\c{}}}ALPHA", style.accent_color)));
+        assert!(!lines[0].contains(&format!("{{\\c{}}}BETA", style.accent_color)));
+        // Event 1 wraps BETA only
+        assert!(lines[1].contains(&format!("{{\\c{}}}BETA", style.accent_color)));
+        assert!(!lines[1].contains(&format!("{{\\c{}}}ALPHA", style.accent_color)));
+        // Event 2 wraps GAMMA only
+        assert!(lines[2].contains(&format!("{{\\c{}}}GAMMA", style.accent_color)));
     }
 
     #[test]
-    fn one_transform_block_per_word() {
-        let tokens: Vec<_> = (0..5).map(|i| tok(" w", i * 100, (i + 1) * 100, 0.5)).collect();
-        let words = flatten_words(&make_output(tokens));
-        let phrases = words_to_phrases(&words, 5);
-        let style = AssStyle::default();
-        let event = phrase_to_ass_event(&phrases[0], &style);
-        // N words → N open transforms (to accent) and N close transforms (to primary)
-        let open_count = event.matches(&format!("\\c{}", style.accent_color)).count();
-        let close_count = event.matches(&format!("\\c{}", style.primary_color)).count();
-        assert_eq!(open_count, 5);
-        assert_eq!(close_count, 5);
-    }
-
-    #[test]
-    fn transform_times_are_relative_to_phrase_start() {
-        // Phrase starts at t=5000ms absolute; with lead-in disabled, first word's
-        // transform must fire at relative t=0.
+    fn word_event_end_equals_next_word_start() {
+        // Event i ends at word[i+1].start_ms; last event ends at phrase_last_word.end_ms.
         let tokens = vec![
-            tok(" first",  5000, 5400, 0.9),
-            tok(" second", 5400, 5900, 0.9),
+            tok(" a", 0,    300,  0.9),
+            tok(" b", 500,  900,  0.9),  // gap between a.end=300 and b.start=500
+            tok(" c", 1100, 1500, 0.9),
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
-        let event = phrase_to_ass_event(&phrases[0], &style);
-        assert!(event.contains(&format!("\\t(0,0,\\c{})", style.accent_color)));
-        assert!(event.contains(&format!("\\t(400,400,\\c{})", style.primary_color)));
-        assert!(event.contains(&format!("\\t(400,400,\\c{})", style.accent_color)));
-        assert!(event.contains(&format!("\\t(900,900,\\c{})", style.primary_color)));
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("Dialogue:")).collect();
+        // Event 0: [0, 500] — ends at word b's start, not word a's end
+        assert!(lines[0].contains(&format!(",{},", ms_to_ass(500))));
+        // Event 1: [500, 1100] — ends at word c's start
+        assert!(lines[1].contains(&format!(",{},", ms_to_ass(1100))));
+        // Event 2 (last): [1100, 1500] — ends at phrase_last_word.end
+        assert!(lines[2].contains(&format!(",{},", ms_to_ass(1500))));
     }
 
     #[test]
-    fn first_word_respects_lead_in() {
-        // Default lead-in of 100ms pushes the first word's highlight to t=100,
-        // while subsequent words keep their natural timing.
-        let tokens = vec![
-            tok(" first",  0,   500,  0.9),
-            tok(" second", 500, 1000, 0.9),
-        ];
-        let words = flatten_words(&make_output(tokens));
-        let phrases = words_to_phrases(&words, 5);
-        let style = AssStyle::default();  // first_word_lead_in_ms = 100
-        let event = phrase_to_ass_event(&phrases[0], &style);
-        // First word: delayed by lead-in
-        assert!(event.contains(&format!("\\t(100,100,\\c{})", style.accent_color)));
-        // First word still closes at its natural end
-        assert!(event.contains(&format!("\\t(500,500,\\c{})", style.primary_color)));
-        // Second word unaffected by lead-in
-        assert!(event.contains(&format!("\\t(500,500,\\c{})", style.accent_color)));
-        assert!(event.contains(&format!("\\t(1000,1000,\\c{})", style.primary_color)));
-    }
-
-    #[test]
-    fn first_word_lead_in_clamped_when_word_is_shorter() {
-        // A very short first word (50ms) can't absorb a 100ms lead-in.
-        // The highlight start should clamp to the word's end so rendering stays valid.
-        let tokens = vec![
-            tok(" short", 0,  50,  0.9),
-            tok(" next",  50, 500, 0.9),
-        ];
-        let words = flatten_words(&make_output(tokens));
-        let phrases = words_to_phrases(&words, 5);
-        let style = AssStyle::default();  // lead-in = 100, word is 50ms
-        let event = phrase_to_ass_event(&phrases[0], &style);
-        // Clamped: start == end == 50ms (effectively no highlight for this short word)
-        assert!(event.contains(&format!("\\t(50,50,\\c{})", style.accent_color)));
-        assert!(event.contains(&format!("\\t(50,50,\\c{})", style.primary_color)));
-    }
-
-    #[test]
-    fn transform_uses_style_colors_not_hardcoded() {
+    fn events_use_style_colors_not_hardcoded() {
         let tokens = vec![tok(" word", 0, 500, 0.9)];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle {
             accent_color: "&H0000AAAA".to_string(),
             primary_color: "&H00BBBBBB".to_string(),
+            first_word_lead_in_ms: 0,
             ..AssStyle::default()
         };
-        let event = phrase_to_ass_event(&phrases[0], &style);
-        assert!(event.contains("&H0000AAAA"));
-        assert!(event.contains("&H00BBBBBB"));
-        // Default yellow must NOT appear when style overrides it
-        assert!(!event.contains("&H0000FFFF"));
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        assert!(out.contains("&H0000AAAA"));
+        assert!(out.contains("&H00BBBBBB"));
+        // Default yellow / white must NOT leak through when style overrides them
+        assert!(!out.contains("&H0000FFFF"));
+        assert!(!out.contains("&H00FFFFFF"));
     }
 
     // --- build_ass_header ---
@@ -473,14 +530,17 @@ mod tests {
 
     #[test]
     fn generate_ass_correct_dialogue_count() {
-        // 6 words, target 5 → 2 phrases → 2 Dialogue lines
+        // 6 words, target 5 → 2 phrases.
+        // With default lead-in (100ms): phrase 1 = 5 words → 1 lead-in + 5 word events = 6.
+        // Phrase 2 = 1 word → 1 lead-in + 1 word event = 2.
+        // Total = 8 Dialogue lines.
         let tokens: Vec<_> = (0..6)
             .map(|i| tok(" word", i * 500, (i + 1) * 500, 0.9))
             .collect();
         let output = make_output(tokens);
         let style = AssStyle::default();
         let ass = generate_ass(&output, &style);
-        assert_eq!(ass.matches("Dialogue:").count(), 2);
+        assert_eq!(ass.matches("Dialogue:").count(), 8);
     }
 
     #[test]
