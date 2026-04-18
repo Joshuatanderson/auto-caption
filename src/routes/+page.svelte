@@ -7,6 +7,7 @@
   import { Card, CardContent } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Progress } from '$lib/components/ui/progress';
+  import ThemePicker from '$lib/components/ThemePicker.svelte';
 
   // --- Whisper types (must match src-tauri/src/pipeline/types.rs) ---
   interface WhisperToken {
@@ -198,6 +199,8 @@
 </script>
 
 <svelte:window ondragover={(e) => e.preventDefault()} ondrop={(e) => e.preventDefault()} />
+
+<ThemePicker />
 
 <main class="flex min-h-screen items-center justify-center bg-background p-8">
   <Card class="w-full max-w-2xl">
