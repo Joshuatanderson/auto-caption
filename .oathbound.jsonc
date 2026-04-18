@@ -1,0 +1,8 @@
+// Oathbound project configuration
+// Docs: https://oathbound.ai/docs/config
+{
+  "$schema": "https://oathbound.ai/schemas/config-v1.json",
+  "version": 1,
+  "enforcement": "warn",
+  "org": null
+}
