@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::db;
 use crate::pipeline;
 use crate::pipeline::types::WhisperOutput;
 
@@ -20,8 +21,18 @@ pub fn transcribe(wav_path: String) -> Result<WhisperOutput, String> {
 }
 
 #[tauri::command]
-pub fn generate_ass(input_path: String, transcript: WhisperOutput) -> Result<String, String> {
-    let style = pipeline::types::AssStyle::default();
+pub fn generate_ass(
+    input_path: String,
+    transcript: WhisperOutput,
+    state: tauri::State<'_, db::DbState>,
+) -> Result<String, String> {
+    let mut style = pipeline::types::AssStyle::default();
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let colors = db::current_ass_style(&conn);
+        style.primary_color = colors.primary_color;
+        style.accent_color = colors.accent_color;
+    }
     let content = pipeline::ass::generate_ass(&transcript, &style);
     pipeline::ass::write_ass_file(&PathBuf::from(input_path), &content)
         .map(|p| p.to_string_lossy().into_owned())

@@ -23,6 +23,9 @@
       document.documentElement.style.setProperty(k, v);
     }
     currentSlug = data.slug;
+    try {
+      localStorage.setItem('captioner-theme-vars', JSON.stringify(data.css_vars));
+    } catch (_) {}
   }
 
   onMount(async () => {
