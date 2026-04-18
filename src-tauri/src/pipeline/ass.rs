@@ -2,24 +2,42 @@ use std::path::{Path, PathBuf};
 
 use crate::pipeline::types::{AssStyle, Phrase, StageError, WhisperOutput, Word};
 
-/// Extracts all word tokens from the whisper output, filtering noise tokens.
-/// Whisper tokens can include special markers ([_BEG_], [_TT_N]) — skip those.
+/// Extracts word-level units from whisper's sub-word BPE tokens, filtering noise.
+///
+/// Whisper tokenizes with a leading-space convention: a token that begins with
+/// whitespace starts a new word, a token without leading whitespace continues
+/// the previous word. Contractions and punctuation ride along as continuations:
+///   "don't" → " don" + "'t"
+///   "you're" → " you" + "'re"
+///   "Hello," → " Hello" + ","
+/// We must inspect the raw text *before* trimming, otherwise the word-boundary
+/// signal is lost and later join-by-space produces "don 't" and "Hello ,".
+///
+/// Noise tokens ([_BEG_], [_TT_N], <|...|>) are dropped.
 pub fn flatten_words(output: &WhisperOutput) -> Vec<Word> {
-    output
-        .transcription
-        .iter()
-        .flat_map(|seg| seg.tokens.iter())
-        .filter(|t| {
+    let mut words: Vec<Word> = Vec::new();
+    for seg in &output.transcription {
+        for t in &seg.tokens {
             let trimmed = t.text.trim();
-            !trimmed.is_empty() && !trimmed.starts_with('[') && !trimmed.starts_with('<')
-        })
-        .map(|t| Word {
-            text: t.text.trim().to_string(),
-            start_ms: t.offsets.from,
-            end_ms: t.offsets.to,
-            prob: t.p,
-        })
-        .collect()
+            if trimmed.is_empty() || trimmed.starts_with('[') || trimmed.starts_with('<') {
+                continue;
+            }
+            let starts_new_word = words.is_empty() || t.text.starts_with(char::is_whitespace);
+            if starts_new_word {
+                words.push(Word {
+                    text: trimmed.to_string(),
+                    start_ms: t.offsets.from,
+                    end_ms: t.offsets.to,
+                    prob: t.p,
+                });
+            } else {
+                let last = words.last_mut().unwrap();
+                last.text.push_str(trimmed);
+                last.end_ms = t.offsets.to;
+            }
+        }
+    }
+    words
 }
 
 /// Groups words into phrases of approximately `target_size` words.
@@ -208,11 +226,73 @@ mod tests {
         assert_eq!(words[0].text, "Hello");
     }
 
+    #[test]
+    fn flatten_words_merges_contractions() {
+        // "don't" arrives as two BPE tokens: " don" + "'t"
+        let tokens = vec![
+            tok(" don", 0, 300, 0.9),
+            tok("'t",  300, 400, 0.85),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].text, "don't");
+        assert_eq!(words[0].start_ms, 0);
+        assert_eq!(words[0].end_ms, 400);
+    }
+
+    #[test]
+    fn flatten_words_merges_multiple_contractions_in_sequence() {
+        // "you're so don't" → 4 words even though whisper emits 6 tokens
+        let tokens = vec![
+            tok(" you",  0,    200, 0.9),
+            tok("'re",   200,  300, 0.8),
+            tok(" so",   300,  500, 0.95),
+            tok(" don",  500,  700, 0.9),
+            tok("'t",    700,  800, 0.8),
+            tok(" stop", 800, 1100, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        assert_eq!(words.len(), 4);
+        assert_eq!(words[0].text, "you're");
+        assert_eq!(words[1].text, "so");
+        assert_eq!(words[2].text, "don't");
+        assert_eq!(words[3].text, "stop");
+    }
+
+    #[test]
+    fn flatten_words_merges_punctuation() {
+        // Punctuation has no leading space and should attach to the previous word
+        let tokens = vec![
+            tok(" Hello", 0,   500, 0.9),
+            tok(",",       500, 510, 0.99),
+            tok(" world",  510, 900, 0.9),
+            tok(".",       900, 910, 0.99),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text, "Hello,");
+        assert_eq!(words[1].text, "world.");
+    }
+
+    #[test]
+    fn flatten_words_first_token_has_no_leading_space() {
+        // Sometimes whisper's very first token has no leading space; it must still
+        // start a new word rather than try to merge into a nonexistent predecessor.
+        let tokens = vec![
+            tok("Hello", 0, 500, 0.9),
+            tok(" world", 500, 1000, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text, "Hello");
+        assert_eq!(words[1].text, "world");
+    }
+
     // --- words_to_phrases ---
 
     #[test]
     fn phrases_even_split() {
-        let tokens: Vec<_> = (0..10).map(|i| tok("w", i * 100, (i + 1) * 100, 0.9)).collect();
+        let tokens: Vec<_> = (0..10).map(|i| tok(" w", i * 100, (i + 1) * 100, 0.9)).collect();
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         assert_eq!(phrases.len(), 2);
@@ -222,7 +302,7 @@ mod tests {
 
     #[test]
     fn phrases_remainder() {
-        let tokens: Vec<_> = (0..7).map(|i| tok("w", i * 100, (i + 1) * 100, 0.9)).collect();
+        let tokens: Vec<_> = (0..7).map(|i| tok(" w", i * 100, (i + 1) * 100, 0.9)).collect();
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         assert_eq!(phrases.len(), 2);
@@ -238,9 +318,9 @@ mod tests {
     #[test]
     fn accent_is_highest_probability() {
         let tokens = vec![
-            tok("low",  0, 500, 0.5),
-            tok("high", 500, 1000, 0.95),
-            tok("mid",  1000, 1500, 0.7),
+            tok(" low",  0, 500, 0.5),
+            tok(" high", 500, 1000, 0.95),
+            tok(" mid",  1000, 1500, 0.7),
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
@@ -252,8 +332,8 @@ mod tests {
     #[test]
     fn accent_word_wrapped_in_color_override() {
         let tokens = vec![
-            tok("plain",  0, 500, 0.5),
-            tok("ACCENT", 500, 1000, 0.99),
+            tok(" plain",  0, 500, 0.5),
+            tok(" ACCENT", 500, 1000, 0.99),
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
@@ -266,7 +346,7 @@ mod tests {
 
     #[test]
     fn only_one_color_override_per_phrase() {
-        let tokens: Vec<_> = (0..5).map(|i| tok("w", i * 100, (i + 1) * 100, 0.5)).collect();
+        let tokens: Vec<_> = (0..5).map(|i| tok(" w", i * 100, (i + 1) * 100, 0.5)).collect();
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle::default();
@@ -301,7 +381,7 @@ mod tests {
     fn generate_ass_correct_dialogue_count() {
         // 6 words, target 5 → 2 phrases → 2 Dialogue lines
         let tokens: Vec<_> = (0..6)
-            .map(|i| tok("word", i * 500, (i + 1) * 500, 0.9))
+            .map(|i| tok(" word", i * 500, (i + 1) * 500, 0.9))
             .collect();
         let output = make_output(tokens);
         let style = AssStyle::default();
@@ -312,7 +392,7 @@ mod tests {
     #[test]
     fn generate_ass_well_formed() {
         let tokens: Vec<_> = (0..5)
-            .map(|i| tok("hello", i * 500, (i + 1) * 500, 0.9))
+            .map(|i| tok(" hello", i * 500, (i + 1) * 500, 0.9))
             .collect();
         let output = make_output(tokens);
         let style = AssStyle::default();
