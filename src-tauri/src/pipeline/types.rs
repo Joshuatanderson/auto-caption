@@ -47,7 +47,9 @@ pub struct Word {
     pub prob: f64,
 }
 
-/// A phrase: a group of words with one accented word.
+/// A group of consecutive words rendered together as one caption event.
+/// Per-word highlighting is driven by each word's `start_ms`/`end_ms`, not by a
+/// single pre-selected accent word.
 #[derive(Debug, Clone)]
 pub struct Phrase {
     pub words: Vec<Word>,
@@ -73,7 +75,7 @@ pub struct AssStyle {
     pub font_name: String,
     pub font_size: u32,
     pub primary_color: String,  // ASS hex: &H00FFFFFF (AABBGGRR)
-    pub accent_color: String,   // &H0000FFFF (yellow)
+    pub accent_color: String,   // active/highlight color the currently-spoken word flashes to (default &H0000FFFF yellow)
     pub outline_color: String,
     pub outline_width: f32,
     pub margin_v: u32,

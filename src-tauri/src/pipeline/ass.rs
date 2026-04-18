@@ -41,7 +41,6 @@ pub fn flatten_words(output: &WhisperOutput) -> Vec<Word> {
 }
 
 /// Groups words into phrases of approximately `target_size` words.
-/// Accent word = highest probability word in the phrase.
 pub fn words_to_phrases(words: &[Word], target_size: usize) -> Vec<Phrase> {
     if words.is_empty() {
         return vec![];
@@ -75,31 +74,37 @@ fn ms_to_ass(ms: i64) -> String {
     seconds_to_ass_timestamp(ms as f64 / 1000.0)
 }
 
+/// Emits one word of a phrase wrapped in `\t` transforms that flash its color
+/// to the accent color during its active time window. Times are milliseconds
+/// relative to the enclosing Dialogue event's Start.
+fn word_span(word: &Word, phrase_start_ms: i64, style: &AssStyle) -> String {
+    let rel_start = (word.start_ms - phrase_start_ms).max(0);
+    let rel_end = (word.end_ms - phrase_start_ms).max(rel_start);
+    format!(
+        "{{\\t({rs},{rs},\\c{accent})\\t({re},{re},\\c{primary})}}{text}",
+        rs = rel_start,
+        re = rel_end,
+        accent = style.accent_color,
+        primary = style.primary_color,
+        text = word.text,
+    )
+}
+
 /// Renders a single phrase as one ASS Dialogue line.
-/// The accent word is wrapped in a color override tag.
+/// Each word is wrapped in per-word `\t` transforms so the highlight follows
+/// the currently-spoken word as playback progresses.
 pub fn phrase_to_ass_event(phrase: &Phrase, style: &AssStyle) -> String {
     if phrase.words.is_empty() {
         return String::new();
     }
-    let start = ms_to_ass(phrase.words.first().unwrap().start_ms);
+    let phrase_start_ms = phrase.words.first().unwrap().start_ms;
+    let start = ms_to_ass(phrase_start_ms);
     let end = ms_to_ass(phrase.words.last().unwrap().end_ms);
 
     let text: Vec<String> = phrase
         .words
         .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            if i == phrase.accent_index {
-                format!(
-                    "{{\\c{accent}}}{}{{\\c{primary}}}",
-                    w.text,
-                    accent = style.accent_color,
-                    primary = style.primary_color
-                )
-            } else {
-                w.text.clone()
-            }
-        })
+        .map(|w| word_span(w, phrase_start_ms, style))
         .collect();
 
     format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{}\n", text.join(" "))
@@ -330,30 +335,70 @@ mod tests {
     // --- phrase_to_ass_event ---
 
     #[test]
-    fn accent_word_wrapped_in_color_override() {
+    fn every_word_has_timed_color_transform() {
         let tokens = vec![
-            tok(" plain",  0, 500, 0.5),
-            tok(" ACCENT", 500, 1000, 0.99),
+            tok(" hello", 0, 500, 0.9),
+            tok(" world", 500, 1000, 0.9),
         ];
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle::default();
         let event = phrase_to_ass_event(&phrases[0], &style);
-        assert!(event.contains("ACCENT"));
-        assert!(event.contains("{\\c"));  // color override present
         assert!(event.starts_with("Dialogue:"));
+        assert!(event.contains("hello"));
+        assert!(event.contains("world"));
+        // First word's transform fires at t=0 relative to event start
+        assert!(event.contains(&format!("\\t(0,0,\\c{})", style.accent_color)));
+        // Each word gets its own open + close transform pair → 2 words × 2 transforms = 4 `\t(`
+        assert_eq!(event.matches("\\t(").count(), 4);
     }
 
     #[test]
-    fn only_one_color_override_per_phrase() {
+    fn one_transform_block_per_word() {
         let tokens: Vec<_> = (0..5).map(|i| tok(" w", i * 100, (i + 1) * 100, 0.5)).collect();
         let words = flatten_words(&make_output(tokens));
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle::default();
         let event = phrase_to_ass_event(&phrases[0], &style);
-        // There's exactly one accent open tag and one reset tag
-        let open_count = event.matches(&format!("{{\\c{}}}", style.accent_color)).count();
-        assert_eq!(open_count, 1);
+        // N words → N open transforms (to accent) and N close transforms (to primary)
+        let open_count = event.matches(&format!("\\c{}", style.accent_color)).count();
+        let close_count = event.matches(&format!("\\c{}", style.primary_color)).count();
+        assert_eq!(open_count, 5);
+        assert_eq!(close_count, 5);
+    }
+
+    #[test]
+    fn transform_times_are_relative_to_phrase_start() {
+        // Phrase starts at t=5000ms absolute; first word's transform must still fire at 0.
+        let tokens = vec![
+            tok(" first",  5000, 5400, 0.9),
+            tok(" second", 5400, 5900, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle::default();
+        let event = phrase_to_ass_event(&phrases[0], &style);
+        assert!(event.contains(&format!("\\t(0,0,\\c{})", style.accent_color)));
+        assert!(event.contains(&format!("\\t(400,400,\\c{})", style.primary_color)));
+        assert!(event.contains(&format!("\\t(400,400,\\c{})", style.accent_color)));
+        assert!(event.contains(&format!("\\t(900,900,\\c{})", style.primary_color)));
+    }
+
+    #[test]
+    fn transform_uses_style_colors_not_hardcoded() {
+        let tokens = vec![tok(" word", 0, 500, 0.9)];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle {
+            accent_color: "&H0000AAAA".to_string(),
+            primary_color: "&H00BBBBBB".to_string(),
+            ..AssStyle::default()
+        };
+        let event = phrase_to_ass_event(&phrases[0], &style);
+        assert!(event.contains("&H0000AAAA"));
+        assert!(event.contains("&H00BBBBBB"));
+        // Default yellow must NOT appear when style overrides it
+        assert!(!event.contains("&H0000FFFF"));
     }
 
     // --- build_ass_header ---
