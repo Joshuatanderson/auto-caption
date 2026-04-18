@@ -28,7 +28,6 @@ pub fn flatten_words(output: &WhisperOutput) -> Vec<Word> {
                     text: trimmed.to_string(),
                     start_ms: t.offsets.from,
                     end_ms: t.offsets.to,
-                    prob: t.p,
                 });
             } else {
                 let last = words.last_mut().unwrap();
@@ -47,15 +46,7 @@ pub fn words_to_phrases(words: &[Word], target_size: usize) -> Vec<Phrase> {
     }
     words
         .chunks(target_size)
-        .map(|chunk| {
-            let accent_index = chunk
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.prob.partial_cmp(&b.prob).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            Phrase { words: chunk.to_vec(), accent_index }
-        })
+        .map(|chunk| Phrase { words: chunk.to_vec() })
         .collect()
 }
 
@@ -162,13 +153,14 @@ pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
     out
 }
 
-/// Builds the ASS header block. Pure function.
-pub fn build_ass_header(style: &AssStyle) -> String {
+/// Builds the ASS header block. Pure function. `play_res_x`/`play_res_y` must
+/// match the burn output dimensions so libass scales font/margins correctly.
+pub fn build_ass_header(style: &AssStyle, play_res_x: u32, play_res_y: u32) -> String {
     format!(
         "[Script Info]\n\
          ScriptType: v4.00+\n\
-         PlayResX: 1920\n\
-         PlayResY: 1080\n\
+         PlayResX: {px}\n\
+         PlayResY: {py}\n\
          ScaledBorderAndShadow: yes\n\
          \n\
          [V4+ Styles]\n\
@@ -180,6 +172,8 @@ pub fn build_ass_header(style: &AssStyle) -> String {
          \n\
          [Events]\n\
          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
+        px = play_res_x,
+        py = play_res_y,
         font = style.font_name,
         size = style.font_size,
         primary = style.primary_color,
@@ -190,18 +184,29 @@ pub fn build_ass_header(style: &AssStyle) -> String {
 }
 
 /// Converts a WhisperOutput to a complete ASS file string. Fully pure.
-pub fn generate_ass(output: &WhisperOutput, style: &AssStyle) -> String {
+pub fn generate_ass(
+    output: &WhisperOutput,
+    style: &AssStyle,
+    play_res_x: u32,
+    play_res_y: u32,
+) -> String {
     let words = flatten_words(output);
     let phrases = words_to_phrases(&words, style.words_per_phrase);
-    let mut ass = build_ass_header(style);
+    let mut ass = build_ass_header(style, play_res_x, play_res_y);
     for phrase in &phrases {
         ass.push_str(&phrase_to_ass_events(phrase, style));
     }
     ass
 }
 
-pub fn write_ass_file(video_path: &Path, content: &str) -> Result<PathBuf, StageError> {
-    let out = video_path.with_extension("ass");
+/// Writes `content` to `<folder>/<stem>_<slug>.ass`. The folder must already exist.
+pub fn write_ass_file(
+    folder: &Path,
+    stem: &str,
+    slug: &str,
+    content: &str,
+) -> Result<PathBuf, StageError> {
+    let out = folder.join(format!("{stem}_{slug}.ass"));
     std::fs::write(&out, content).map_err(|e| StageError {
         stage: "generate_ass".to_string(),
         message: format!("Failed to write .ass file: {e}"),
@@ -372,18 +377,6 @@ mod tests {
         assert!(phrases.is_empty());
     }
 
-    #[test]
-    fn accent_is_highest_probability() {
-        let tokens = vec![
-            tok(" low",  0, 500, 0.5),
-            tok(" high", 500, 1000, 0.95),
-            tok(" mid",  1000, 1500, 0.7),
-        ];
-        let words = flatten_words(&make_output(tokens));
-        let phrases = words_to_phrases(&words, 5);
-        assert_eq!(phrases[0].accent_index, 1);
-    }
-
     // --- phrase_to_ass_events ---
 
     fn dialogue_count(output: &str) -> usize {
@@ -512,7 +505,7 @@ mod tests {
     #[test]
     fn header_contains_script_info() {
         let style = AssStyle::default();
-        let header = build_ass_header(&style);
+        let header = build_ass_header(&style, 1920, 1080);
         assert!(header.contains("[Script Info]"));
         assert!(header.contains("[V4+ Styles]"));
         assert!(header.contains("[Events]"));
@@ -521,9 +514,17 @@ mod tests {
     #[test]
     fn header_contains_style_values() {
         let style = AssStyle::default();
-        let header = build_ass_header(&style);
+        let header = build_ass_header(&style, 1920, 1080);
         assert!(header.contains("Arial"));
         assert!(header.contains("72"));
+    }
+
+    #[test]
+    fn header_uses_provided_play_res() {
+        let style = AssStyle::default();
+        let header = build_ass_header(&style, 1080, 1920);
+        assert!(header.contains("PlayResX: 1080"));
+        assert!(header.contains("PlayResY: 1920"));
     }
 
     // --- generate_ass (end-to-end) ---
@@ -539,7 +540,7 @@ mod tests {
             .collect();
         let output = make_output(tokens);
         let style = AssStyle::default();
-        let ass = generate_ass(&output, &style);
+        let ass = generate_ass(&output, &style, 1920, 1080);
         assert_eq!(ass.matches("Dialogue:").count(), 8);
     }
 
@@ -550,7 +551,7 @@ mod tests {
             .collect();
         let output = make_output(tokens);
         let style = AssStyle::default();
-        let ass = generate_ass(&output, &style);
+        let ass = generate_ass(&output, &style, 1920, 1080);
         assert!(ass.starts_with("[Script Info]"));
         assert!(ass.contains("Dialogue:"));
     }

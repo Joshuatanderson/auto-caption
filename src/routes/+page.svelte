@@ -33,10 +33,23 @@
   }
 
   type StageStatus = 'idle' | 'running' | 'done' | 'error';
+  type OutputFormat = 'unchanged' | 'youtube-short' | 'linkedin-short' | 'square';
+
+  const FORMATS: { value: OutputFormat; label: string; hint: string }[] = [
+    { value: 'unchanged',      label: 'Unchanged',    hint: 'Original dims' },
+    { value: 'youtube-short',  label: 'YT Shorts',    hint: '9:16 · 1080×1920' },
+    { value: 'linkedin-short', label: 'LI Shorts',    hint: '4:5 · 1080×1350' },
+    { value: 'square',         label: 'Square',       hint: '1:1 · 1080×1080' },
+  ];
+
+  interface GenerateResult { folder: string; formats: OutputFormat[]; }
+  interface BurnResult { folder: string; files: string[]; }
 
   // --- Input ---
   let droppedPath = $state<string | null>(null);
   let isDragging = $state(false);
+  // Default selection: just 'unchanged'. Multi-select — user toggles each format.
+  let selectedFormats = $state<Set<OutputFormat>>(new Set<OutputFormat>(['unchanged']));
 
   // --- Pipeline stage state ---
   let audioStatus = $state<StageStatus>('idle');
@@ -47,18 +60,35 @@
   let transcriptSnippet = $state('');
 
   let assStatus = $state<StageStatus>('idle');
-  let assPath = $state<string | null>(null);
+  let exportFolder = $state<string | null>(null);
 
   let burnStatus = $state<StageStatus>('idle');
-  let burnPath = $state<string | null>(null);
+  let burnFiles = $state<string[]>([]);
 
   let lastError = $state<string | null>(null);
+
+  // Changing the selected formats invalidates the generated .ass files
+  // (PlayRes/style differ per format) and the burned outputs (crop/scale chain
+  // differs). Reset both downstream stages.
+  function toggleFormat(value: OutputFormat) {
+    const next = new Set(selectedFormats);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    selectedFormats = next;
+    assStatus = 'idle'; exportFolder = null;
+    burnStatus = 'idle'; burnFiles = [];
+  }
+
+  let formatsArray = $derived(
+    FORMATS.filter((f) => selectedFormats.has(f.value)).map((f) => f.value),
+  );
+  let hasFormat = $derived(selectedFormats.size > 0);
 
   // --- Derived enable conditions ---
   let canExtract = $derived(droppedPath !== null && audioStatus !== 'running');
   let canTranscribe = $derived(audioPath !== null && transcribeStatus !== 'running');
-  let canGenerateAss = $derived(transcript !== null && assStatus !== 'running');
-  let canBurn = $derived(assPath !== null && burnStatus !== 'running');
+  let canGenerateAss = $derived(transcript !== null && hasFormat && assStatus !== 'running');
+  let canBurn = $derived(exportFolder !== null && hasFormat && burnStatus !== 'running');
 
   // --- Helpers ---
   function basename(path: string): string {
@@ -90,8 +120,8 @@
       // Reset downstream state when a new file is loaded
       audioStatus = 'idle'; audioPath = null;
       transcribeStatus = 'idle'; transcript = null; transcriptSnippet = '';
-      assStatus = 'idle'; assPath = null;
-      burnStatus = 'idle'; burnPath = null;
+      assStatus = 'idle'; exportFolder = null;
+      burnStatus = 'idle'; burnFiles = [];
       lastError = null;
       toast.success(`Loaded: ${basename(path)}`);
     } else {
@@ -152,12 +182,14 @@
   async function runGenerateAss() {
     assStatus = 'running'; lastError = null;
     try {
-      assPath = await invoke<string>('generate_ass', {
+      const res = await invoke<GenerateResult>('generate_ass', {
         inputPath: droppedPath,
         transcript,
+        formats: formatsArray,
       });
+      exportFolder = res.folder;
       assStatus = 'done';
-      toast.success('Captions generated');
+      toast.success(`Captions generated (${res.formats.length})`);
     } catch (err) {
       assStatus = 'error';
       showError(parseError(err));
@@ -165,14 +197,17 @@
   }
 
   async function runBurn() {
+    if (!exportFolder) return;
     burnStatus = 'running'; lastError = null;
     try {
-      burnPath = await invoke<string>('burn_captions', {
+      const res = await invoke<BurnResult>('burn_captions', {
         inputPath: droppedPath,
-        assPath,
+        folder: exportFolder,
+        formats: formatsArray,
       });
+      burnFiles = res.files;
       burnStatus = 'done';
-      toast.success('Done! Captioned video ready.');
+      toast.success(`Done — ${res.files.length} captioned video${res.files.length === 1 ? '' : 's'} ready`);
     } catch (err) {
       burnStatus = 'error';
       showError(parseError(err));
@@ -233,6 +268,39 @@
         {/if}
       </div>
 
+      <!-- Output formats (multi-select) -->
+      {#if droppedPath}
+        <div class="space-y-2">
+          <div class="flex items-baseline justify-between">
+            <p class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Output formats</p>
+            <p class="text-xs text-muted-foreground">{selectedFormats.size} selected</p>
+          </div>
+          <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {#each FORMATS as f (f.value)}
+              {@const active = selectedFormats.has(f.value)}
+              <button
+                type="button"
+                onclick={() => toggleFormat(f.value)}
+                aria-pressed={active}
+                class="flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-ring"
+                class:border-primary={active}
+                class:bg-accent={active}
+                class:text-accent-foreground={active}
+                class:border-border={!active}
+                class:hover:bg-accent={!active}
+                class:hover:text-accent-foreground={!active}
+              >
+                <span class="font-medium">{f.label}</span>
+                <span class="text-xs text-muted-foreground">{f.hint}</span>
+              </button>
+            {/each}
+          </div>
+          {#if !hasFormat}
+            <p class="text-xs text-destructive">Select at least one output format.</p>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Pipeline stages -->
       {#if droppedPath}
         <div class="space-y-3">
@@ -287,12 +355,12 @@
             <div class="min-w-0 flex-1 text-sm">
               {#if assStatus === 'running'}
                 <Progress />
-              {:else if assStatus === 'done' && assPath}
-                <span class="font-mono text-muted-foreground truncate block">{basename(assPath)}</span>
+              {:else if assStatus === 'done' && exportFolder}
+                <span class="font-mono text-muted-foreground truncate block">{basename(exportFolder)}/</span>
               {:else if assStatus === 'error'}
                 <span class="text-destructive">Failed</span>
               {:else}
-                <span class="text-muted-foreground">Build .ass subtitle file</span>
+                <span class="text-muted-foreground">Build .ass subtitle files</span>
               {/if}
             </div>
           </div>
@@ -307,13 +375,15 @@
             <div class="min-w-0 flex-1 text-sm">
               {#if burnStatus === 'running'}
                 <Progress />
-              {:else if burnStatus === 'done' && burnPath}
+              {:else if burnStatus === 'done' && exportFolder}
                 <div class="flex items-center gap-2">
-                  <span class="font-mono text-muted-foreground truncate">{basename(burnPath)}</span>
+                  <span class="font-mono text-muted-foreground truncate">
+                    {basename(exportFolder)}/ · {burnFiles.length} file{burnFiles.length === 1 ? '' : 's'}
+                  </span>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onclick={() => revealItemInDir(burnPath!)}
+                    onclick={() => revealItemInDir(exportFolder!)}
                     class="shrink-0"
                   >
                     Show in Finder
@@ -322,7 +392,7 @@
               {:else if burnStatus === 'error'}
                 <span class="text-destructive">Failed</span>
               {:else}
-                <span class="text-muted-foreground">Burn captions into MP4</span>
+                <span class="text-muted-foreground">Burn captions into MP4s</span>
               {/if}
             </div>
           </div>

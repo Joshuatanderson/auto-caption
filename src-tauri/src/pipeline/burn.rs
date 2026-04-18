@@ -1,22 +1,68 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::pipeline::types::StageError;
+use crate::pipeline::types::{FormatSpec, StageError};
 
-pub fn burn_output_path(input: &Path) -> PathBuf {
-    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-    let parent = input.parent().unwrap_or(Path::new("."));
-    parent.join(format!("{stem}_captioned.mp4"))
+pub fn burn_output_path(folder: &Path, stem: &str, slug: &str) -> PathBuf {
+    folder.join(format!("{stem}_{slug}.mp4"))
+}
+
+/// Largest centered rect with target aspect that fits inside (iw, ih).
+/// Returned dims are rounded down to even pixels (ffmpeg+h264 want even).
+pub fn center_crop_dims(iw: u32, ih: u32, tw: u32, th: u32) -> (u32, u32) {
+    // iw/ih vs tw/th, compared via cross-multiplication to avoid floats.
+    // input_wider_or_eq: iw * th >= ih * tw  → crop width, keep height
+    // input_narrower:    iw * th <  ih * tw  → crop height, keep width
+    let input_wider_or_eq = (iw as u64) * (th as u64) >= (ih as u64) * (tw as u64);
+    let (cw, ch) = if input_wider_or_eq {
+        let crop_w = ((ih as u64) * (tw as u64) / (th as u64)) as u32;
+        (crop_w, ih)
+    } else {
+        let crop_h = ((iw as u64) * (th as u64) / (tw as u64)) as u32;
+        (iw, crop_h)
+    };
+    (cw & !1, ch & !1)
+}
+
+/// Builds the `-vf` filter chain: crop + scale + ass burn.
+/// When output dims match input, skips crop/scale and only burns the ASS.
+pub fn build_vf_chain(
+    ass_path: &Path,
+    format: &FormatSpec,
+    input_w: u32,
+    input_h: u32,
+) -> String {
+    let ass = ass_path.to_string_lossy();
+    if format.width == input_w && format.height == input_h {
+        return format!("ass={ass}");
+    }
+    let (cw, ch) = center_crop_dims(input_w, input_h, format.width, format.height);
+    format!(
+        "crop={cw}:{ch}:(iw-{cw})/2:(ih-{ch})/2,scale={tw}:{th},ass={ass}",
+        cw = cw,
+        ch = ch,
+        tw = format.width,
+        th = format.height,
+        ass = ass,
+    )
 }
 
 /// Builds ffmpeg burn-in arguments using VideoToolbox hardware encoder. Pure function.
-pub fn build_burn_args(input: &Path, ass_path: &Path, output: &Path) -> Vec<String> {
+pub fn build_burn_args(
+    input: &Path,
+    ass_path: &Path,
+    output: &Path,
+    format: &FormatSpec,
+    input_w: u32,
+    input_h: u32,
+) -> Vec<String> {
+    let vf = build_vf_chain(ass_path, format, input_w, input_h);
     vec![
         "-y".to_string(),
         "-i".to_string(),
         input.to_string_lossy().into_owned(),
         "-vf".to_string(),
-        format!("ass={}", ass_path.to_string_lossy()),
+        vf,
         "-c:v".to_string(),
         "h264_videotoolbox".to_string(),
         "-c:a".to_string(),
@@ -25,9 +71,17 @@ pub fn build_burn_args(input: &Path, ass_path: &Path, output: &Path) -> Vec<Stri
     ]
 }
 
-pub fn run_burn(input: &Path, ass_path: &Path) -> Result<PathBuf, StageError> {
-    let output = burn_output_path(input);
-    let args = build_burn_args(input, ass_path, &output);
+pub fn run_burn(
+    input: &Path,
+    ass_path: &Path,
+    folder: &Path,
+    stem: &str,
+    format: &FormatSpec,
+    input_w: u32,
+    input_h: u32,
+) -> Result<PathBuf, StageError> {
+    let output = burn_output_path(folder, stem, format.slug);
+    let args = build_burn_args(input, ass_path, &output, format, input_w, input_h);
 
     let result = Command::new("ffmpeg").args(&args).output().map_err(|e| StageError {
         stage: "burn_captions".to_string(),
@@ -49,38 +103,103 @@ pub fn run_burn(input: &Path, ass_path: &Path) -> Result<PathBuf, StageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::types::OutputFormat;
     use std::path::Path;
 
     #[test]
-    fn burn_output_path_appends_captioned() {
-        let input = Path::new("/videos/myvideo.mp4");
-        assert_eq!(burn_output_path(input), Path::new("/videos/myvideo_captioned.mp4"));
+    fn burn_output_path_appends_slug() {
+        let folder = Path::new("/exports/abc");
+        assert_eq!(
+            burn_output_path(folder, "myvideo", "ytshort"),
+            Path::new("/exports/abc/myvideo_ytshort.mp4")
+        );
     }
 
     #[test]
-    fn burn_output_path_same_directory() {
-        let input = Path::new("/tmp/test.mp4");
-        let out = burn_output_path(input);
-        assert_eq!(out.parent().unwrap(), Path::new("/tmp"));
+    fn burn_output_path_captioned_default() {
+        let folder = Path::new("/exports/abc");
+        assert_eq!(
+            burn_output_path(folder, "myvideo", "captioned"),
+            Path::new("/exports/abc/myvideo_captioned.mp4")
+        );
+    }
+
+    #[test]
+    fn burn_output_path_uses_folder() {
+        let folder = Path::new("/tmp/export");
+        let out = burn_output_path(folder, "test", "square");
+        assert_eq!(out.parent().unwrap(), Path::new("/tmp/export"));
+    }
+
+    #[test]
+    fn center_crop_16_9_to_9_16() {
+        // 1920x1080 → 9:16 target
+        let (cw, ch) = center_crop_dims(1920, 1080, 1080, 1920);
+        // input wider → crop width; crop_h = 1080, crop_w = 1080 * 1080 / 1920 = 607 → 606 (even)
+        assert_eq!(ch, 1080);
+        assert_eq!(cw, 606);
+    }
+
+    #[test]
+    fn center_crop_9_16_to_4_5() {
+        // 1080x1920 → 4:5 target (1080x1350)
+        // input aspect = 0.5625, target = 0.8 → input is narrower → crop height
+        let (cw, ch) = center_crop_dims(1080, 1920, 1080, 1350);
+        assert_eq!(cw, 1080);
+        // crop_h = 1080 * 1350 / 1080 = 1350
+        assert_eq!(ch, 1350);
+    }
+
+    #[test]
+    fn center_crop_matches_target_aspect_returns_full() {
+        // 1920x1080 → 16:9 target at same aspect → full frame
+        let (cw, ch) = center_crop_dims(1920, 1080, 1920, 1080);
+        assert_eq!((cw, ch), (1920, 1080));
+    }
+
+    #[test]
+    fn vf_chain_unchanged_has_only_ass() {
+        let spec = OutputFormat::Unchanged.spec(1920, 1080);
+        let vf = build_vf_chain(Path::new("/tmp/x.ass"), &spec, 1920, 1080);
+        assert_eq!(vf, "ass=/tmp/x.ass");
+    }
+
+    #[test]
+    fn vf_chain_preset_has_crop_scale_ass() {
+        let spec = OutputFormat::YoutubeShort.spec(0, 0);
+        let vf = build_vf_chain(Path::new("/tmp/x.ass"), &spec, 1920, 1080);
+        assert!(vf.starts_with("crop="));
+        assert!(vf.contains("scale=1080:1920"));
+        assert!(vf.contains("ass=/tmp/x.ass"));
     }
 
     #[test]
     fn build_burn_args_contains_videotoolbox() {
-        let input = Path::new("/tmp/video.mp4");
-        let ass = Path::new("/tmp/video.ass");
-        let output = Path::new("/tmp/video_captioned.mp4");
-        let args = build_burn_args(input, ass, output);
+        let spec = OutputFormat::Square.spec(0, 0);
+        let args = build_burn_args(
+            Path::new("/tmp/video.mp4"),
+            Path::new("/tmp/video.ass"),
+            Path::new("/tmp/video_square.mp4"),
+            &spec,
+            1920,
+            1080,
+        );
         assert!(args.contains(&"h264_videotoolbox".to_string()));
-        assert!(args.iter().any(|a| a.starts_with("ass=")));
-        assert_eq!(args.last().unwrap(), "/tmp/video_captioned.mp4");
+        assert!(args.iter().any(|a| a.contains("ass=")));
+        assert_eq!(args.last().unwrap(), "/tmp/video_square.mp4");
     }
 
     #[test]
     fn build_burn_args_audio_copy() {
-        let input = Path::new("/tmp/video.mp4");
-        let ass = Path::new("/tmp/video.ass");
-        let output = Path::new("/tmp/video_captioned.mp4");
-        let args = build_burn_args(input, ass, output);
+        let spec = OutputFormat::Unchanged.spec(1920, 1080);
+        let args = build_burn_args(
+            Path::new("/tmp/video.mp4"),
+            Path::new("/tmp/video.ass"),
+            Path::new("/tmp/video_captioned.mp4"),
+            &spec,
+            1920,
+            1080,
+        );
         let copy_pos = args.iter().position(|a| a == "copy").unwrap();
         assert_eq!(args[copy_pos - 1], "-c:a");
     }
@@ -93,7 +212,9 @@ mod tests {
         let input = root.join("test-artifacts/sample.mp4");
         let ass = root.join("test-artifacts/sample.ass");
         assert!(input.exists() && ass.exists());
-        let result = run_burn(&input, &ass);
+        let spec = OutputFormat::Unchanged.spec(1920, 1080);
+        let folder = root.join("test-artifacts");
+        let result = run_burn(&input, &ass, &folder, "sample", &spec, 1920, 1080);
         assert!(result.is_ok(), "burn failed: {:?}", result.err());
     }
 }

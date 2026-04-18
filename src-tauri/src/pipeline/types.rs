@@ -44,16 +44,13 @@ pub struct Word {
     pub text: String,
     pub start_ms: i64,
     pub end_ms: i64,
-    pub prob: f64,
 }
 
 /// A group of consecutive words rendered together as one caption event.
-/// Per-word highlighting is driven by each word's `start_ms`/`end_ms`, not by a
-/// single pre-selected accent word.
+/// Per-word highlighting is driven by each word's `start_ms`/`end_ms`.
 #[derive(Debug, Clone)]
 pub struct Phrase {
     pub words: Vec<Word>,
-    pub accent_index: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,5 +98,111 @@ impl Default for AssStyle {
             words_per_phrase: 5,
             first_word_lead_in_ms: 100,
         }
+    }
+}
+
+/// Target output format the user selects before burn. `Unchanged` preserves
+/// input dimensions; presets crop+scale to platform-native sizes.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputFormat {
+    Unchanged,
+    YoutubeShort,   // 1080x1920, 9:16
+    LinkedinShort,  // 1080x1350, 4:5 — LinkedIn's highest-engagement feed crop
+    Square,         // 1080x1080, 1:1
+}
+
+impl Default for OutputFormat {
+    fn default() -> Self {
+        OutputFormat::Unchanged
+    }
+}
+
+/// Resolved dimensions + style scale for a given OutputFormat, filename slug included.
+#[derive(Debug, Clone)]
+pub struct FormatSpec {
+    pub width: u32,
+    pub height: u32,
+    pub font_size: u32,
+    pub margin_v: u32,
+    pub slug: &'static str,
+}
+
+impl OutputFormat {
+    /// Resolves to a FormatSpec. `input_w`/`input_h` are only consulted for
+    /// `Unchanged`; presets ignore them.
+    pub fn spec(&self, input_w: u32, input_h: u32) -> FormatSpec {
+        match self {
+            // Scale font/margin from 1080p defaults (72px font @ 1080h ≈ 6.67%,
+            // 80px margin @ 1080h ≈ 7.4%) so vertical inputs don't get tiny captions.
+            OutputFormat::Unchanged => FormatSpec {
+                width: input_w,
+                height: input_h,
+                font_size: ((input_h as f32) * 0.0667).round().max(16.0) as u32,
+                margin_v: ((input_h as f32) * 0.074).round() as u32,
+                slug: "captioned",
+            },
+            OutputFormat::YoutubeShort => FormatSpec {
+                width: 1080,
+                height: 1920,
+                font_size: 80,
+                margin_v: 400,
+                slug: "ytshort",
+            },
+            OutputFormat::LinkedinShort => FormatSpec {
+                width: 1080,
+                height: 1350,
+                font_size: 72,
+                margin_v: 200,
+                slug: "lishort",
+            },
+            OutputFormat::Square => FormatSpec {
+                width: 1080,
+                height: 1080,
+                font_size: 64,
+                margin_v: 100,
+                slug: "square",
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spec_unchanged_matches_input() {
+        let s = OutputFormat::Unchanged.spec(1920, 1080);
+        assert_eq!((s.width, s.height), (1920, 1080));
+        assert_eq!(s.slug, "captioned");
+        // at h=1080, font_size ≈ 72, margin_v ≈ 80
+        assert!((70..=74).contains(&s.font_size));
+        assert!((78..=82).contains(&s.margin_v));
+    }
+
+    #[test]
+    fn spec_unchanged_scales_for_vertical() {
+        let s = OutputFormat::Unchanged.spec(1080, 1920);
+        assert_eq!((s.width, s.height), (1080, 1920));
+        assert!(s.font_size > 100, "tall input should get larger font, got {}", s.font_size);
+    }
+
+    #[test]
+    fn spec_presets_have_expected_dims() {
+        assert_eq!(OutputFormat::YoutubeShort.spec(0, 0).width, 1080);
+        assert_eq!(OutputFormat::YoutubeShort.spec(0, 0).height, 1920);
+        assert_eq!(OutputFormat::LinkedinShort.spec(0, 0).width, 1080);
+        assert_eq!(OutputFormat::LinkedinShort.spec(0, 0).height, 1350);
+        assert_eq!(OutputFormat::Square.spec(0, 0).width, 1080);
+        assert_eq!(OutputFormat::Square.spec(0, 0).height, 1080);
+    }
+
+    #[test]
+    fn output_format_serde_kebab_case() {
+        let s = serde_json::to_string(&OutputFormat::YoutubeShort).unwrap();
+        assert_eq!(s, "\"youtube-short\"");
+        let parsed: OutputFormat = serde_json::from_str("\"linkedin-short\"").unwrap();
+        assert_eq!(parsed, OutputFormat::LinkedinShort);
     }
 }
