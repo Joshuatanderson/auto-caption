@@ -335,8 +335,11 @@ pub fn get_current_theme(state: tauri::State<DbState>) -> Result<ThemeData, Stri
 #[tauri::command]
 pub fn set_theme(slug: String, state: tauri::State<DbState>) -> Result<(), String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
+    // Must be UPDATE, not INSERT OR REPLACE: the row has output_dir and
+    // caption_position columns that aren't listed here, and REPLACE would
+    // DELETE + re-INSERT, quietly wiping those values every theme switch.
     db.execute(
-        "INSERT OR REPLACE INTO user_preferences (id, current_theme) VALUES (1, ?1)",
+        "UPDATE user_preferences SET current_theme = ?1 WHERE id = 1",
         params![slug],
     )
     .map_err(|e| e.to_string())?;

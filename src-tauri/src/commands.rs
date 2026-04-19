@@ -111,8 +111,14 @@ fn emit_stage(app: &tauri::AppHandle, stage: PipelineStage) {
     let _ = app.emit(PROGRESS_EVENT, PipelineProgress { stage });
 }
 
+/// `async fn` is load-bearing: each `spawn_blocking(...).await` between stages
+/// yields the Tauri runtime worker, which is what lets `app.emit(...)` events
+/// actually reach the webview between stages instead of arriving as a batch
+/// once the whole command returns. Keeping this as a sync `fn` meant the
+/// webview never painted `pipeline-progress` events until after all four
+/// stages had run.
 #[tauri::command]
-pub fn run_pipeline(
+pub async fn run_pipeline(
     app: tauri::AppHandle,
     input_path: String,
     formats: Vec<OutputFormat>,
@@ -124,7 +130,8 @@ pub fn run_pipeline(
 
     let input = PathBuf::from(input_path);
 
-    // Single DB read for everything we need from config.
+    // Single DB read for everything we need. Must release the lock before any
+    // `.await` (std::sync::Mutex guard is !Send).
     let (configured_output, colors, position) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         (
@@ -143,14 +150,30 @@ pub fn run_pipeline(
 
     // ---- Audio ----
     emit_stage(&app, PipelineStage::Audio);
-    let audio_path =
-        pipeline::audio::run_extract_audio(&input, Some(&artifacts)).map_err(err)?;
+    let audio_path = {
+        let input = input.clone();
+        let artifacts = artifacts.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            pipeline::audio::run_extract_audio(&input, Some(&artifacts))
+        })
+        .await
+        .map_err(|e| stage_err("extract_audio", format!("task join error: {e}")))?
+        .map_err(err)?
+    };
 
     // ---- Transcribe ----
     emit_stage(&app, PipelineStage::Transcribe);
-    let transcript = pipeline::transcribe::run_transcribe(&audio_path).map_err(err)?;
+    let transcript = {
+        let audio_path = audio_path.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            pipeline::transcribe::run_transcribe(&audio_path)
+        })
+        .await
+        .map_err(|e| stage_err("transcribe", format!("task join error: {e}")))?
+        .map_err(err)?
+    };
 
-    // ---- Generate ASS (one file per format) ----
+    // ---- Generate ASS (in-memory + small file writes; stays inline) ----
     emit_stage(&app, PipelineStage::Ass);
     for format in &formats {
         let spec = format.spec(iw, ih);
@@ -173,17 +196,27 @@ pub fn run_pipeline(
     for format in &formats {
         let spec = format.spec(iw, ih);
         let ass_path = artifacts.join(format!("{stem}_{slug}.ass", slug = spec.slug));
-        let out = pipeline::burn::run_burn(
-            &input,
-            &ass_path,
-            &folder,
-            &stem,
-            &spec,
-            iw,
-            ih,
-            fonts_dir.as_deref(),
-        )
-        .map_err(err)?;
+        let out = {
+            let input = input.clone();
+            let folder = folder.clone();
+            let stem = stem.clone();
+            let fonts_dir = fonts_dir.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                pipeline::burn::run_burn(
+                    &input,
+                    &ass_path,
+                    &folder,
+                    &stem,
+                    &spec,
+                    iw,
+                    ih,
+                    fonts_dir.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| stage_err("burn", format!("task join error: {e}")))?
+            .map_err(err)?
+        };
         files.push(out.to_string_lossy().into_owned());
     }
 
