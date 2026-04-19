@@ -37,13 +37,13 @@ pub fn build_whisper_args(wav_path: &Path, model_path: &Path, output_stem: &Path
     ]
 }
 
-/// Resolves the whisper model path. Honors `CAPTIONER_WHISPER_MODEL` if set
+/// Resolves the whisper model path. Honors `AUTOCAP_WHISPER_MODEL` if set
 /// (lets users keep the model outside `~/.local` without a rebuild); otherwise
 /// falls back to the documented default. The DTW preset downstream is still
 /// tied to large-v3-turbo, so overriding to a different architecture will
 /// misalign timestamps — document this constraint for operators.
 pub fn default_model_path() -> PathBuf {
-    if let Ok(p) = std::env::var("CAPTIONER_WHISPER_MODEL") {
+    if let Ok(p) = std::env::var("AUTOCAP_WHISPER_MODEL") {
         let trimmed = p.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);

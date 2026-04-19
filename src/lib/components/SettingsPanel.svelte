@@ -45,7 +45,7 @@
     }
     currentSlug = data.slug;
     try {
-      localStorage.setItem('captioner-theme-vars', JSON.stringify(data.css_vars));
+      localStorage.setItem('autocap-theme-vars', JSON.stringify(data.css_vars));
     } catch (_) {}
     if (data.slug === 'custom') {
       applyCustomOverrides(customColors.accent_hex);

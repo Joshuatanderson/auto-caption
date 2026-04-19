@@ -17,7 +17,7 @@ on run argv
     set videoPath to item 1 of argv
 
     tell application "System Events"
-        tell process "vid-pipeline"
+        tell process "AutoCap"
             set frontmost to true
             delay 0.5
 

@@ -13,7 +13,7 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
-            let db_path = app_data_dir.join("captioner.db");
+            let db_path = app_data_dir.join("autocap.db");
             let conn = db::init(db_path)?;
             app.manage(db::DbState(Mutex::new(conn)));
             Ok(())

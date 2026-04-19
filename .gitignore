@@ -12,3 +12,7 @@ transcripts/
 test-artifacts/
 .hippo/
 .claude/
+
+# Icon asset outputs we don't ship on macOS.
+src-tauri/icons/android/
+src-tauri/icons/ios/

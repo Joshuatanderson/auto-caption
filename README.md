@@ -1,4 +1,4 @@
-# Captioner
+# AutoCap
 
 A macOS desktop app that takes a video file and produces a captioned version with styled word-level subtitles burned in. Local-first: no cloud uploads, no API keys, no subscriptions.
 
@@ -17,7 +17,7 @@ Each run produces a self-contained `<stem>_export_<unix_secs>/` folder with the 
 
 ## Prerequisites
 
-Captioner shells out to two installed CLIs and reads one model file from disk. It does not bundle any of them — install them yourself:
+AutoCap shells out to two installed CLIs and reads one model file from disk. It does not bundle any of them — install them yourself:
 
 | Dependency | Install | Why |
 |---|---|---|
@@ -39,13 +39,13 @@ curl -L -o ~/.local/models/whisper/large-v3-turbo.bin \
 
 ### Overriding the model path
 
-Set `CAPTIONER_WHISPER_MODEL` to the absolute path of a `.bin` ggml whisper model. The pipeline uses DTW alignment tied to the `large.v3.turbo` head layout, so pointing this at a different architecture (base, small, large-v2, …) will produce misaligned per-word timestamps. Keep it on a large-v3-turbo build.
+Set `AUTOCAP_WHISPER_MODEL` to the absolute path of a `.bin` ggml whisper model. The pipeline uses DTW alignment tied to the `large.v3.turbo` head layout, so pointing this at a different architecture (base, small, large-v2, …) will produce misaligned per-word timestamps. Keep it on a large-v3-turbo build.
 
 ```bash
-export CAPTIONER_WHISPER_MODEL=/Volumes/Scratch/models/large-v3-turbo.bin
+export AUTOCAP_WHISPER_MODEL=/Volumes/Scratch/models/large-v3-turbo.bin
 ```
 
-When launching the `.app` from Finder, env vars aren't inherited — either `open -a vid-pipeline.app` from a shell that has the var set, or use the default path.
+When launching the `.app` from Finder, env vars aren't inherited — either `open -a AutoCap.app` from a shell that has the var set, or use the default path.
 
 ## Running from source
 
@@ -64,10 +64,10 @@ bun run tauri build
 
 Produces under `src-tauri/target/release/bundle/`:
 
-- `macos/vid-pipeline.app` — the double-clickable app bundle
-- `dmg/vid-pipeline_<version>_aarch64.dmg` — a DMG installer
+- `macos/AutoCap.app` — the double-clickable app bundle
+- `dmg/AutoCap_<version>_aarch64.dmg` — a DMG installer
 
-The build is **not signed or notarized**. When someone else downloads it, macOS Gatekeeper will refuse to open it until they right-click → Open, or run `xattr -dr com.apple.quarantine /Applications/vid-pipeline.app` once after installing. They still need whisper-cli + ffmpeg + the model on their own machine — this app is a thin orchestrator, not a self-contained ML bundle.
+The build is **not signed or notarized**. When someone else downloads it, macOS Gatekeeper will refuse to open it until they right-click → Open, or run `xattr -dr com.apple.quarantine /Applications/AutoCap.app` once after installing. They still need whisper-cli + ffmpeg + the model on their own machine — this app is a thin orchestrator, not a self-contained ML bundle.
 
 To ship signed/notarized binaries, you'd need an Apple Developer ID certificate and `codesign` + `xcrun notarytool` wiring in CI.
 

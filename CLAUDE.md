@@ -1,4 +1,4 @@
-# Captioner
+# AutoCap
 
 A macOS desktop app that takes a video file and produces a captioned version with styled word-level subtitles burned in.
 
