@@ -113,6 +113,11 @@ To ship signed/notarized binaries, you'd need an Apple Developer ID certificate 
 - `src/` — Svelte 5 frontend (single screen, no routing).
 - `static/fonts/` — Noto Sans TTFs bundled as Tauri resources so libass can find them regardless of the user's font installation.
 
+## License
+
+- AutoCap itself is licensed under the [Apache License 2.0](./LICENSE).
+- The bundled Noto Sans fonts under `static/fonts/` are licensed separately under the SIL Open Font License 1.1 — see [`static/fonts/OFL.md`](./static/fonts/OFL.md).
+
 ## Design principles
 
 See `CLAUDE.md` for the longer version. Short version: thin Rust orchestration, all styling decisions live in ASS generation, each pipeline stage produces an inspectable artifact, and the pipeline is a pure function from `(input_video, style) → output_video` with no hidden state.
