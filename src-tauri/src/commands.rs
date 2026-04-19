@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
 use crate::db;
+use crate::deps;
 use crate::pipeline;
 use crate::pipeline::types::{AssStyle, OutputFormat, StageError};
 
@@ -131,17 +132,30 @@ pub async fn run_pipeline(
     let input = PathBuf::from(input_path);
 
     // Single DB read for everything we need. Must release the lock before any
-    // `.await` (std::sync::Mutex guard is !Send).
-    let (configured_output, colors, position) = {
+    // `.await` (std::sync::Mutex guard is !Send). Dep resolution happens here
+    // too so we fail loud with install instructions before doing any work.
+    let (configured_output, colors, position, tools) = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let tools = deps::resolve_tools(&conn).map_err(|report| {
+            err(StageError {
+                stage: "dependencies".to_string(),
+                message: format!(
+                    "Missing required system dependencies: {}. See the app's \
+                     dependency check for install instructions.",
+                    report.missing.join(", "),
+                ),
+                stderr: Some(report.install_prompt),
+            })
+        })?;
         (
             db::current_output_dir(&conn),
             db::current_ass_style(&conn),
             db::current_caption_position(&conn),
+            tools,
         )
     };
 
-    let (iw, ih) = pipeline::probe::probe_dimensions(&input).map_err(err)?;
+    let (iw, ih) = pipeline::probe::probe_dimensions(&tools.ffprobe, &input).map_err(err)?;
 
     let folder =
         make_export_folder("run_pipeline", &input, configured_output.as_deref()).map_err(err)?;
@@ -153,8 +167,9 @@ pub async fn run_pipeline(
     let audio_path = {
         let input = input.clone();
         let artifacts = artifacts.clone();
+        let ffmpeg = tools.ffmpeg.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            pipeline::audio::run_extract_audio(&input, Some(&artifacts))
+            pipeline::audio::run_extract_audio(&ffmpeg, &input, Some(&artifacts))
         })
         .await
         .map_err(|e| stage_err("extract_audio", format!("task join error: {e}")))?
@@ -165,8 +180,10 @@ pub async fn run_pipeline(
     emit_stage(&app, PipelineStage::Transcribe);
     let transcript = {
         let audio_path = audio_path.clone();
+        let whisper_cli = tools.whisper_cli.clone();
+        let model = tools.whisper_model.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            pipeline::transcribe::run_transcribe(&audio_path)
+            pipeline::transcribe::run_transcribe(&whisper_cli, &model, &audio_path)
         })
         .await
         .map_err(|e| stage_err("transcribe", format!("task join error: {e}")))?
@@ -201,8 +218,10 @@ pub async fn run_pipeline(
             let folder = folder.clone();
             let stem = stem.clone();
             let fonts_dir = fonts_dir.clone();
+            let ffmpeg = tools.ffmpeg.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 pipeline::burn::run_burn(
+                    &ffmpeg,
                     &input,
                     &ass_path,
                     &folder,
@@ -224,4 +243,16 @@ pub async fn run_pipeline(
         folder: folder.to_string_lossy().into_owned(),
         files,
     })
+}
+
+/// Resolves every dep (reading cached paths first, falling back to a search),
+/// updates the cache, and returns a report the frontend uses to decide whether
+/// to show the install-prompt panel. Safe to call repeatedly — it's cheap
+/// when everything is already cached.
+#[tauri::command]
+pub fn check_dependencies(
+    state: tauri::State<'_, db::DbState>,
+) -> Result<deps::DepReport, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    Ok(deps::check_all(&conn))
 }

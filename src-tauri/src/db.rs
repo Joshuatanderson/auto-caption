@@ -40,6 +40,10 @@ pub fn init(path: PathBuf) -> rusqlite::Result<Connection> {
         CREATE TABLE IF NOT EXISTS user_preferences (
             id            INTEGER PRIMARY KEY CHECK (id = 1),
             current_theme TEXT NOT NULL DEFAULT 'cantaloupe'
+        );
+        CREATE TABLE IF NOT EXISTS dep_paths (
+            name TEXT PRIMARY KEY,
+            path TEXT NOT NULL
         );",
     )?;
     // Migration: add ass_style column if missing (error means it already exists — ignore it)

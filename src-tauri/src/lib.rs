@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod deps;
 mod pipeline;
 
 use std::sync::Mutex;
@@ -20,6 +21,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::run_pipeline,
+            commands::check_dependencies,
             db::get_themes,
             db::get_current_theme,
             db::set_theme,

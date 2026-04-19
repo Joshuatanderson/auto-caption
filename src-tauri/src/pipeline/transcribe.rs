@@ -37,22 +37,6 @@ pub fn build_whisper_args(wav_path: &Path, model_path: &Path, output_stem: &Path
     ]
 }
 
-/// Resolves the whisper model path. Honors `AUTOCAP_WHISPER_MODEL` if set
-/// (lets users keep the model outside `~/.local` without a rebuild); otherwise
-/// falls back to the documented default. The DTW preset downstream is still
-/// tied to large-v3-turbo, so overriding to a different architecture will
-/// misalign timestamps — document this constraint for operators.
-pub fn default_model_path() -> PathBuf {
-    if let Ok(p) = std::env::var("AUTOCAP_WHISPER_MODEL") {
-        let trimmed = p.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".local/models/whisper/large-v3-turbo.bin")
-}
-
 /// Parses whisper-cli JSON output. Pure function — no I/O.
 pub fn parse_whisper_json(json_str: &str) -> Result<WhisperOutput, StageError> {
     serde_json::from_str(json_str).map_err(|e| StageError {
@@ -62,12 +46,15 @@ pub fn parse_whisper_json(json_str: &str) -> Result<WhisperOutput, StageError> {
     })
 }
 
-pub fn run_transcribe(wav_path: &Path) -> Result<WhisperOutput, StageError> {
+pub fn run_transcribe(
+    whisper_cli_path: &Path,
+    model_path: &Path,
+    wav_path: &Path,
+) -> Result<WhisperOutput, StageError> {
     let output_stem = wav_path.with_extension("");
-    let model = default_model_path();
-    let args = build_whisper_args(wav_path, &model, &output_stem);
+    let args = build_whisper_args(wav_path, model_path, &output_stem);
 
-    let result = Command::new("whisper-cli").args(&args).output().map_err(|e| StageError {
+    let result = Command::new(whisper_cli_path).args(&args).output().map_err(|e| StageError {
         stage: "transcribe".to_string(),
         message: format!("Failed to spawn whisper-cli: {e}"),
         stderr: None,
@@ -173,7 +160,9 @@ mod tests {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let wav = manifest.parent().unwrap().join("test-artifacts/sample.wav");
         assert!(wav.exists(), "test-artifacts/sample.wav not found");
-        let result = run_transcribe(&wav);
+        let model = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".local/models/whisper/large-v3-turbo.bin");
+        let result = run_transcribe(Path::new("whisper-cli"), &model, &wav);
         assert!(result.is_ok(), "transcribe failed: {:?}", result.err());
         assert!(!result.unwrap().transcription.is_empty());
     }

@@ -79,6 +79,7 @@ pub fn build_burn_args(
 }
 
 pub fn run_burn(
+    ffmpeg_path: &Path,
     input: &Path,
     ass_path: &Path,
     folder: &Path,
@@ -91,7 +92,7 @@ pub fn run_burn(
     let output = burn_output_path(folder, stem, format.slug);
     let args = build_burn_args(input, ass_path, &output, format, input_w, input_h, fonts_dir);
 
-    let result = Command::new("ffmpeg").args(&args).output().map_err(|e| StageError {
+    let result = Command::new(ffmpeg_path).args(&args).output().map_err(|e| StageError {
         stage: "burn_captions".to_string(),
         message: format!("Failed to spawn ffmpeg: {e}"),
         stderr: None,
@@ -237,7 +238,7 @@ mod tests {
         assert!(input.exists() && ass.exists());
         let spec = OutputFormat::Unchanged.spec(1920, 1080);
         let folder = root.join("test-artifacts");
-        let result = run_burn(&input, &ass, &folder, "sample", &spec, 1920, 1080, None);
+        let result = run_burn(Path::new("ffmpeg"), &input, &ass, &folder, "sample", &spec, 1920, 1080, None);
         assert!(result.is_ok(), "burn failed: {:?}", result.err());
     }
 }

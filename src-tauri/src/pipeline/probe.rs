@@ -17,8 +17,8 @@ struct FfprobeStream {
 }
 
 /// Reads the first video stream's pixel dimensions via ffprobe.
-pub fn probe_dimensions(path: &Path) -> Result<(u32, u32), StageError> {
-    let result = Command::new("ffprobe")
+pub fn probe_dimensions(ffprobe_path: &Path, path: &Path) -> Result<(u32, u32), StageError> {
+    let result = Command::new(ffprobe_path)
         .args([
             "-v",
             "error",
@@ -70,7 +70,7 @@ mod tests {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let input = manifest.parent().unwrap().join("test-artifacts/sample.mp4");
         assert!(input.exists(), "test-artifacts/sample.mp4 not found");
-        let dims = probe_dimensions(&input).expect("probe failed");
+        let dims = probe_dimensions(Path::new("ffprobe"), &input).expect("probe failed");
         assert!(dims.0 > 0 && dims.1 > 0);
     }
 }

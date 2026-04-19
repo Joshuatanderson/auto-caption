@@ -33,11 +33,15 @@ pub fn build_extract_audio_args(input: &Path, output: &Path) -> Vec<String> {
     ]
 }
 
-pub fn run_extract_audio(input: &Path, dest_dir: Option<&Path>) -> Result<PathBuf, StageError> {
+pub fn run_extract_audio(
+    ffmpeg_path: &Path,
+    input: &Path,
+    dest_dir: Option<&Path>,
+) -> Result<PathBuf, StageError> {
     let output = audio_output_path(input, dest_dir);
     let args = build_extract_audio_args(input, &output);
 
-    let result = Command::new("ffmpeg").args(&args).output().map_err(|e| StageError {
+    let result = Command::new(ffmpeg_path).args(&args).output().map_err(|e| StageError {
         stage: "extract_audio".to_string(),
         message: format!("Failed to spawn ffmpeg: {e}"),
         stderr: None,
@@ -112,7 +116,7 @@ mod tests {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let input = manifest.parent().unwrap().join("test-artifacts/sample.mp4");
         assert!(input.exists(), "test-artifacts/sample.mp4 not found");
-        let result = run_extract_audio(&input, None);
+        let result = run_extract_audio(Path::new("ffmpeg"), &input, None);
         assert!(result.is_ok(), "extract_audio failed: {:?}", result.err());
     }
 }

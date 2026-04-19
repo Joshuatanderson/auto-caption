@@ -19,6 +19,18 @@
     stderr?: string;
   }
 
+  interface DepStatus {
+    key: string;
+    label: string;
+    found: boolean;
+    path: string | null;
+  }
+  interface DepReport {
+    statuses: DepStatus[];
+    missing: string[];
+    install_prompt: string;
+  }
+
   type Stage = 'audio' | 'transcribe' | 'ass' | 'burn';
   type StepStatus = 'idle' | 'running' | 'done' | 'error';
   type OutputFormat = 'unchanged' | 'youtube-short' | 'linkedin-short' | 'square';
@@ -51,6 +63,10 @@
   let isDragging = $state(false);
   let selectedFormats = $state<Set<OutputFormat>>(new Set<OutputFormat>(['unchanged']));
   let pipeline = $state<PipelineState>({ kind: 'idle' });
+  let depReport = $state<DepReport | null>(null);
+  let depsChecking = $state(false);
+  let copiedPrompt = $state(false);
+  let depsMissing = $derived(depReport !== null && depReport.missing.length > 0);
 
   let formatsArray = $derived(
     FORMATS.filter((f) => selectedFormats.has(f.value)).map((f) => f.value),
@@ -175,6 +191,33 @@
     }
   }
 
+  async function checkDeps() {
+    depsChecking = true;
+    try {
+      depReport = await invoke<DepReport>('check_dependencies');
+    } catch (err) {
+      toast.error(`Dependency check failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      depsChecking = false;
+    }
+  }
+
+  async function copyInstallPrompt() {
+    if (!depReport || !depReport.install_prompt) return;
+    try {
+      await navigator.clipboard.writeText(depReport.install_prompt);
+      copiedPrompt = true;
+      toast.success('Install prompt copied — paste into Claude Code');
+      setTimeout(() => { copiedPrompt = false; }, 2000);
+    } catch (err) {
+      toast.error('Copy failed — select the text and copy manually');
+    }
+  }
+
+  $effect(() => {
+    if (isTauri) void checkDeps();
+  });
+
   $effect(() => {
     let unlisten: (() => void) | undefined;
     getCurrentWebview()
@@ -199,10 +242,57 @@
 <SettingsPanel />
 
 <main class="flex min-h-screen items-center justify-center bg-background p-8">
-  <Card class="w-full max-w-2xl">
-    <CardContent class="p-8 space-y-6">
+  <div class="flex w-full max-w-2xl flex-col gap-4">
 
-      <!-- Drop zone -->
+    {#if depsMissing && depReport}
+      <Card class="border-destructive/40 bg-destructive/5">
+        <CardContent class="space-y-4 p-6">
+          <div class="space-y-1">
+            <p class="text-sm font-semibold text-foreground">Missing dependencies</p>
+            <p class="text-xs text-muted-foreground">
+              Captioner needs these system tools installed before it can run. They weren't found in
+              <code class="font-mono">$PATH</code> or any common install location.
+            </p>
+          </div>
+          <ul class="space-y-1 text-sm">
+            {#each depReport.statuses as s (s.key)}
+              <li class="flex items-center gap-2">
+                {#if s.found}
+                  <CircleCheckIcon class="size-4 shrink-0 text-primary" />
+                  <span class="text-muted-foreground">{s.label}</span>
+                  {#if s.path}
+                    <code class="truncate font-mono text-xs text-muted-foreground/70">{s.path}</code>
+                  {/if}
+                {:else}
+                  <CircleXIcon class="size-4 shrink-0 text-destructive" />
+                  <span class="font-medium">{s.label}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+          <div class="space-y-2">
+            <p class="text-xs text-muted-foreground">
+              Copy this prompt and paste it into Claude Code (or any AI coding assistant) to install
+              what's missing:
+            </p>
+            <pre class="max-h-56 overflow-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">{depReport.install_prompt}</pre>
+            <div class="flex gap-2">
+              <Button size="sm" onclick={copyInstallPrompt}>
+                {copiedPrompt ? 'Copied' : 'Copy prompt'}
+              </Button>
+              <Button size="sm" variant="outline" onclick={checkDeps} disabled={depsChecking}>
+                {depsChecking ? 'Checking…' : 'Re-check'}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    {/if}
+
+    <Card>
+      <CardContent class="p-8 space-y-6">
+
+        <!-- Drop zone -->
       <div
         role="button"
         tabindex="0"
@@ -324,6 +414,8 @@
         {/if}
       {/if}
 
-    </CardContent>
-  </Card>
+      </CardContent>
+    </Card>
+
+  </div>
 </main>
