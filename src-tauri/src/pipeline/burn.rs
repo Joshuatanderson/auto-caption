@@ -26,24 +26,30 @@ pub fn center_crop_dims(iw: u32, ih: u32, tw: u32, th: u32) -> (u32, u32) {
 
 /// Builds the `-vf` filter chain: crop + scale + ass burn.
 /// When output dims match input, skips crop/scale and only burns the ASS.
+/// `fonts_dir` is passed as `fontsdir=` to libass so it can find bundled fonts.
 pub fn build_vf_chain(
     ass_path: &Path,
     format: &FormatSpec,
     input_w: u32,
     input_h: u32,
+    fonts_dir: Option<&Path>,
 ) -> String {
     let ass = ass_path.to_string_lossy();
+    let ass_filter = match fonts_dir {
+        Some(dir) => format!("ass={ass}:fontsdir={dir}", dir = dir.to_string_lossy()),
+        None => format!("ass={ass}"),
+    };
     if format.width == input_w && format.height == input_h {
-        return format!("ass={ass}");
+        return ass_filter;
     }
     let (cw, ch) = center_crop_dims(input_w, input_h, format.width, format.height);
     format!(
-        "crop={cw}:{ch}:(iw-{cw})/2:(ih-{ch})/2,scale={tw}:{th},ass={ass}",
+        "crop={cw}:{ch}:(iw-{cw})/2:(ih-{ch})/2,scale={tw}:{th},{ass_filter}",
         cw = cw,
         ch = ch,
         tw = format.width,
         th = format.height,
-        ass = ass,
+        ass_filter = ass_filter,
     )
 }
 
@@ -55,8 +61,9 @@ pub fn build_burn_args(
     format: &FormatSpec,
     input_w: u32,
     input_h: u32,
+    fonts_dir: Option<&Path>,
 ) -> Vec<String> {
-    let vf = build_vf_chain(ass_path, format, input_w, input_h);
+    let vf = build_vf_chain(ass_path, format, input_w, input_h, fonts_dir);
     vec![
         "-y".to_string(),
         "-i".to_string(),
@@ -79,9 +86,10 @@ pub fn run_burn(
     format: &FormatSpec,
     input_w: u32,
     input_h: u32,
+    fonts_dir: Option<&Path>,
 ) -> Result<PathBuf, StageError> {
     let output = burn_output_path(folder, stem, format.slug);
-    let args = build_burn_args(input, ass_path, &output, format, input_w, input_h);
+    let args = build_burn_args(input, ass_path, &output, format, input_w, input_h, fonts_dir);
 
     let result = Command::new("ffmpeg").args(&args).output().map_err(|e| StageError {
         stage: "burn_captions".to_string(),
@@ -160,14 +168,27 @@ mod tests {
     #[test]
     fn vf_chain_unchanged_has_only_ass() {
         let spec = OutputFormat::Unchanged.spec(1920, 1080);
-        let vf = build_vf_chain(Path::new("/tmp/x.ass"), &spec, 1920, 1080);
+        let vf = build_vf_chain(Path::new("/tmp/x.ass"), &spec, 1920, 1080, None);
         assert_eq!(vf, "ass=/tmp/x.ass");
+    }
+
+    #[test]
+    fn vf_chain_with_fontsdir() {
+        let spec = OutputFormat::Unchanged.spec(1920, 1080);
+        let vf = build_vf_chain(
+            Path::new("/tmp/x.ass"),
+            &spec,
+            1920,
+            1080,
+            Some(Path::new("/app/fonts")),
+        );
+        assert_eq!(vf, "ass=/tmp/x.ass:fontsdir=/app/fonts");
     }
 
     #[test]
     fn vf_chain_preset_has_crop_scale_ass() {
         let spec = OutputFormat::YoutubeShort.spec(0, 0);
-        let vf = build_vf_chain(Path::new("/tmp/x.ass"), &spec, 1920, 1080);
+        let vf = build_vf_chain(Path::new("/tmp/x.ass"), &spec, 1920, 1080, None);
         assert!(vf.starts_with("crop="));
         assert!(vf.contains("scale=1080:1920"));
         assert!(vf.contains("ass=/tmp/x.ass"));
@@ -183,6 +204,7 @@ mod tests {
             &spec,
             1920,
             1080,
+            None,
         );
         assert!(args.contains(&"h264_videotoolbox".to_string()));
         assert!(args.iter().any(|a| a.contains("ass=")));
@@ -199,6 +221,7 @@ mod tests {
             &spec,
             1920,
             1080,
+            None,
         );
         let copy_pos = args.iter().position(|a| a == "copy").unwrap();
         assert_eq!(args[copy_pos - 1], "-c:a");
@@ -214,7 +237,7 @@ mod tests {
         assert!(input.exists() && ass.exists());
         let spec = OutputFormat::Unchanged.spec(1920, 1080);
         let folder = root.join("test-artifacts");
-        let result = run_burn(&input, &ass, &folder, "sample", &spec, 1920, 1080);
+        let result = run_burn(&input, &ass, &folder, "sample", &spec, 1920, 1080, None);
         assert!(result.is_ok(), "burn failed: {:?}", result.err());
     }
 }

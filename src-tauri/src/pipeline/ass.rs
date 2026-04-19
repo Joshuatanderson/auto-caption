@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 
-use crate::pipeline::types::{AssStyle, Phrase, StageError, WhisperOutput, Word};
+use crate::pipeline::types::{AssStyle, CaptionPosition, Phrase, StageError, WhisperOutput, Word};
+
+/// ASS `Alignment` numpad value for a caption position.
+fn alignment_for(position: CaptionPosition) -> u8 {
+    match position {
+        CaptionPosition::Top => 8,
+        CaptionPosition::Middle => 5,
+        CaptionPosition::Bottom => 2,
+    }
+}
 
 /// Extracts word-level units from whisper's sub-word BPE tokens, filtering noise.
 ///
@@ -66,9 +75,12 @@ fn ms_to_ass(ms: i64) -> String {
 }
 
 /// Emits one Dialogue line spanning [start_ms, end_ms] showing the whole
-/// phrase text, with at most one word statically wrapped in the accent color.
-/// `accent_index = None` emits the phrase with no word highlighted (lead-in).
+/// phrase text on the given `layer`, with at most one word statically wrapped
+/// in the accent color. `accent_index = None` emits the phrase with no word
+/// highlighted (lead-in). The sharp text sits on layer 1 so it draws above the
+/// glow on layer 0.
 fn build_dialogue_line(
+    layer: u8,
     start_ms: i64,
     end_ms: i64,
     words: &[Word],
@@ -93,7 +105,39 @@ fn build_dialogue_line(
             }
         })
         .collect();
-    format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{}\n", text.join(" "))
+    format!(
+        "Dialogue: {layer},{start},{end},Default,,0,0,0,,{}\n",
+        text.join(" ")
+    )
+}
+
+/// Emits a Layer-0 glow "halo" behind the sharp dialogue: same timing and
+/// words, but fill and shadow are fully transparent and the outline is widened,
+/// tinted to the accent color, and blurred — so only a soft colored haze
+/// radiates from the letter shapes. The sharp Layer-1 line draws on top.
+///
+/// The glow is uniform across the phrase (no per-word accent switch) because
+/// the fill is invisible anyway; the visible halo is the outline color alone.
+fn build_glow_line(
+    start_ms: i64,
+    end_ms: i64,
+    words: &[Word],
+    style: &AssStyle,
+) -> String {
+    let start = ms_to_ass(start_ms);
+    let end = ms_to_ass(end_ms);
+    let text: String = words
+        .iter()
+        .map(|w| w.text.clone())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bord = style.outline_width * 2.0;
+    format!(
+        "Dialogue: 0,{start},{end},Default,,0,0,0,,\
+         {{\\1a&HFF&\\4a&HFF&\\bord{bord:.1}\\blur2\\3c{accent}}}{text}\n",
+        bord = bord,
+        accent = style.accent_color,
+    )
 }
 
 /// Renders a phrase as a sequence of Dialogue lines — one per word, each
@@ -119,7 +163,14 @@ pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
     let mut out = String::new();
 
     if lead_in_ms > 0 {
+        out.push_str(&build_glow_line(
+            phrase_start_ms,
+            phrase_start_ms + lead_in_ms,
+            &phrase.words,
+            style,
+        ));
         out.push_str(&build_dialogue_line(
+            1,
             phrase_start_ms,
             phrase_start_ms + lead_in_ms,
             &phrase.words,
@@ -142,7 +193,9 @@ pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
         if start >= end {
             continue;
         }
+        out.push_str(&build_glow_line(start, end, &phrase.words, style));
         out.push_str(&build_dialogue_line(
+            1,
             start,
             end,
             &phrase.words,
@@ -168,7 +221,7 @@ pub fn build_ass_header(style: &AssStyle, play_res_x: u32, play_res_y: u32) -> S
                  Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, \
                  Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
          Style: Default,{font},{size},{primary},&H000000FF,{outline},&H00000000,\
-                -1,0,0,0,100,100,0,0,1,{outline_w:.1},0,2,10,10,{margin_v},1\n\
+                -1,0,0,0,100,100,0,0,1,{outline_w:.1},0,{alignment},10,10,{margin_v},1\n\
          \n\
          [Events]\n\
          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
@@ -179,6 +232,7 @@ pub fn build_ass_header(style: &AssStyle, play_res_x: u32, play_res_y: u32) -> S
         primary = style.primary_color,
         outline = style.outline_color,
         outline_w = style.outline_width,
+        alignment = alignment_for(style.position),
         margin_v = style.margin_v,
     )
 }
@@ -218,7 +272,7 @@ pub fn write_ass_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::types::{AssStyle, WhisperOutput, WhisperSegment, WhisperToken, WOffsets, WTimestamps};
+    use crate::pipeline::types::{AssStyle, CaptionPosition, WhisperOutput, WhisperSegment, WhisperToken, WOffsets, WTimestamps};
 
     fn ts(from: &str, to: &str) -> WTimestamps {
         WTimestamps { from: from.to_string(), to: to.to_string() }
@@ -383,6 +437,20 @@ mod tests {
         output.matches("Dialogue:").count()
     }
 
+    fn sharp_lines(output: &str) -> Vec<&str> {
+        output
+            .lines()
+            .filter(|l| l.starts_with("Dialogue: 1,"))
+            .collect()
+    }
+
+    fn glow_lines(output: &str) -> Vec<&str> {
+        output
+            .lines()
+            .filter(|l| l.starts_with("Dialogue: 0,"))
+            .collect()
+    }
+
     #[test]
     fn phrase_emits_one_event_per_word_plus_lead_in() {
         let tokens: Vec<_> = (0..5).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
@@ -390,8 +458,10 @@ mod tests {
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle::default();  // lead_in = 100
         let out = phrase_to_ass_events(&phrases[0], &style);
-        // 1 lead-in event + 5 word events
-        assert_eq!(dialogue_count(&out), 6);
+        // 1 lead-in + 5 word events, each emitted as (glow, sharp) pair = 12
+        assert_eq!(dialogue_count(&out), 12);
+        assert_eq!(sharp_lines(&out).len(), 6);
+        assert_eq!(glow_lines(&out).len(), 6);
     }
 
     #[test]
@@ -401,8 +471,9 @@ mod tests {
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
         let out = phrase_to_ass_events(&phrases[0], &style);
-        // 0 lead-in + 5 word events
-        assert_eq!(dialogue_count(&out), 5);
+        // 5 word events × (glow + sharp) = 10
+        assert_eq!(dialogue_count(&out), 10);
+        assert_eq!(sharp_lines(&out).len(), 5);
     }
 
     #[test]
@@ -412,7 +483,8 @@ mod tests {
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
         let out = phrase_to_ass_events(&phrases[0], &style);
-        // Each word event has one open accent and one close primary
+        // Only the sharp layer emits \c color-switch tags; glow uses \3c (outline).
+        // Each sharp word event has one open accent and one close primary.
         assert_eq!(out.matches(&format!("{{\\c{}}}", style.accent_color)).count(), 3);
         assert_eq!(out.matches(&format!("{{\\c{}}}", style.primary_color)).count(), 3);
     }
@@ -427,18 +499,16 @@ mod tests {
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle::default();  // lead_in = 100
         let out = phrase_to_ass_events(&phrases[0], &style);
-        // Lead-in event is the first Dialogue line and has no accent wrap
-        let first_line = out.lines().next().unwrap();
-        assert!(first_line.starts_with("Dialogue:"));
-        assert!(!first_line.contains(&format!("{{\\c{}}}", style.accent_color)));
-        // It still contains the phrase text in full
-        assert!(first_line.contains("alpha"));
-        assert!(first_line.contains("beta"));
+        // The sharp lead-in is the first Layer-1 line; it has no \c wrap.
+        let first_sharp = *sharp_lines(&out).first().unwrap();
+        assert!(!first_sharp.contains(&format!("{{\\c{}}}", style.accent_color)));
+        assert!(first_sharp.contains("alpha"));
+        assert!(first_sharp.contains("beta"));
     }
 
     #[test]
     fn accent_moves_across_events() {
-        // For a 3-word phrase with lead-in disabled, event N should accent word N.
+        // For a 3-word phrase with lead-in disabled, sharp event N accents word N.
         let tokens = vec![
             tok(" ALPHA", 0,   400, 0.9),
             tok(" BETA",  400, 800, 0.9),
@@ -448,7 +518,7 @@ mod tests {
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
         let out = phrase_to_ass_events(&phrases[0], &style);
-        let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("Dialogue:")).collect();
+        let lines = sharp_lines(&out);
         assert_eq!(lines.len(), 3);
         // Event 0 wraps ALPHA only
         assert!(lines[0].contains(&format!("{{\\c{}}}ALPHA", style.accent_color)));
@@ -472,13 +542,61 @@ mod tests {
         let phrases = words_to_phrases(&words, 5);
         let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
         let out = phrase_to_ass_events(&phrases[0], &style);
-        let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("Dialogue:")).collect();
+        let lines = sharp_lines(&out);
         // Event 0: [0, 500] — ends at word b's start, not word a's end
         assert!(lines[0].contains(&format!(",{},", ms_to_ass(500))));
         // Event 1: [500, 1100] — ends at word c's start
         assert!(lines[1].contains(&format!(",{},", ms_to_ass(1100))));
         // Event 2 (last): [1100, 1500] — ends at phrase_last_word.end
         assert!(lines[2].contains(&format!(",{},", ms_to_ass(1500))));
+    }
+
+    #[test]
+    fn glow_line_uses_accent_color_with_blur_and_widened_outline() {
+        let tokens: Vec<_> = (0..3).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        let glow = glow_lines(&out);
+        assert_eq!(glow.len(), 3);
+        // Every glow line must: sit on Layer 0, blur the edges, widen outline to
+        // 2× normal (default outline_width=3.0 → 6.0), tint outline to accent,
+        // and zero fill + shadow alpha so only the halo is visible.
+        let expected_bord = format!("\\bord{:.1}", style.outline_width * 2.0);
+        for line in &glow {
+            assert!(line.starts_with("Dialogue: 0,"));
+            assert!(line.contains("\\blur2"));
+            assert!(line.contains(&expected_bord));
+            assert!(line.contains(&format!("\\3c{}", style.accent_color)));
+            assert!(line.contains("\\1a&HFF&"));
+            assert!(line.contains("\\4a&HFF&"));
+            // Glow layer has no per-word \c accent switch — halo is uniform.
+            assert!(!line.contains(&format!("\\c{}", style.accent_color)));
+        }
+    }
+
+    #[test]
+    fn glow_is_uniform_across_highlighted_and_non_highlighted_words() {
+        // With a 3-word phrase and no lead-in, each sharp event accents a
+        // different word — but every glow line should tint the same accent
+        // halo across ALL words, regardless of which word is active.
+        let tokens = vec![
+            tok(" ALPHA", 0,   400, 0.9),
+            tok(" BETA",  400, 800, 0.9),
+            tok(" GAMMA", 800, 1200, 0.9),
+        ];
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let style = AssStyle { first_word_lead_in_ms: 0, ..AssStyle::default() };
+        let out = phrase_to_ass_events(&phrases[0], &style);
+        for line in glow_lines(&out) {
+            // Contains all three words, none individually wrapped in accent.
+            assert!(line.contains("ALPHA"));
+            assert!(line.contains("BETA"));
+            assert!(line.contains("GAMMA"));
+            assert!(!line.contains("\\c"));  // no per-word color switches in glow
+        }
     }
 
     #[test]
@@ -515,8 +633,8 @@ mod tests {
     fn header_contains_style_values() {
         let style = AssStyle::default();
         let header = build_ass_header(&style, 1920, 1080);
-        assert!(header.contains("Arial"));
-        assert!(header.contains("72"));
+        assert!(header.contains(&style.font_name));
+        assert!(header.contains(&style.font_size.to_string()));
     }
 
     #[test]
@@ -527,6 +645,33 @@ mod tests {
         assert!(header.contains("PlayResY: 1920"));
     }
 
+    #[test]
+    fn header_uses_alignment_for_position() {
+        // The numeric alignment field in the Style row changes with position.
+        // It's the value between the outline-width "3.0,0," and the ",10,10,"
+        // margins: "...1,3.0,0,{alignment},10,10,{margin_v},1".
+        let style_top = AssStyle { position: CaptionPosition::Top, ..AssStyle::default() };
+        assert!(build_ass_header(&style_top, 1920, 1080).contains(",0,8,10,10,"));
+
+        let style_mid = AssStyle { position: CaptionPosition::Middle, ..AssStyle::default() };
+        assert!(build_ass_header(&style_mid, 1920, 1080).contains(",0,5,10,10,"));
+
+        let style_bot = AssStyle { position: CaptionPosition::Bottom, ..AssStyle::default() };
+        assert!(build_ass_header(&style_bot, 1920, 1080).contains(",0,2,10,10,"));
+    }
+
+    #[test]
+    fn generate_ass_respects_position() {
+        let tokens: Vec<_> = (0..3)
+            .map(|i| tok(" word", i * 500, (i + 1) * 500, 0.9))
+            .collect();
+        let output = make_output(tokens);
+        let style = AssStyle { position: CaptionPosition::Top, ..AssStyle::default() };
+        let ass = generate_ass(&output, &style, 1920, 1080);
+        // Header style row must embed alignment=8 for Top.
+        assert!(ass.contains(",0,8,10,10,"));
+    }
+
     // --- generate_ass (end-to-end) ---
 
     #[test]
@@ -534,14 +679,14 @@ mod tests {
         // 6 words, target 5 → 2 phrases.
         // With default lead-in (100ms): phrase 1 = 5 words → 1 lead-in + 5 word events = 6.
         // Phrase 2 = 1 word → 1 lead-in + 1 word event = 2.
-        // Total = 8 Dialogue lines.
+        // 8 sharp events total, each paired with a glow event on Layer 0 → 16.
         let tokens: Vec<_> = (0..6)
             .map(|i| tok(" word", i * 500, (i + 1) * 500, 0.9))
             .collect();
         let output = make_output(tokens);
         let style = AssStyle::default();
         let ass = generate_ass(&output, &style, 1920, 1080);
-        assert_eq!(ass.matches("Dialogue:").count(), 8);
+        assert_eq!(ass.matches("Dialogue:").count(), 16);
     }
 
     #[test]

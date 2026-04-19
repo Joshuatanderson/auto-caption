@@ -20,6 +20,7 @@
         "bits-ui": "^2.16.3",
         "clsx": "^2.1.1",
         "mode-watcher": "^1.1.0",
+        "oathbound": "^0.17.3",
         "shadcn-svelte": "^1.2.7",
         "svelte": "^5.0.0",
         "svelte-check": "^4.0.0",
@@ -329,6 +330,8 @@
     "nanoid": ["nanoid@3.3.11", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w=="],
 
     "node-fetch-native": ["node-fetch-native@1.6.7", "", {}, "sha512-g9yhqoedzIUm0nTnTqAQvueMPVOuIY16bqgAJJC8XOOubYFNwz6IER9qs0Gq2Xd0+CecCKFjtdDTMA4u4xG06Q=="],
+
+    "oathbound": ["oathbound@0.17.3", "", { "bin": { "oathbound": "dist/cli.cjs" } }, "sha512-ihoU22Sqfr8I6C8cX60LFi0eWij8EaXh0dQZIaLZi2+w5GhOJPOvY6VrLVElrogilaFhq3ZD26C7mmDf3NgaRw=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 

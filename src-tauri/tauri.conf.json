@@ -30,6 +30,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../static/fonts/NotoSans-Regular.ttf": "fonts/NotoSans-Regular.ttf",
+      "../static/fonts/NotoSans-Bold.ttf": "fonts/NotoSans-Bold.ttf",
+      "../static/fonts/NotoSans-VariableFont.ttf": "fonts/NotoSans-VariableFont.ttf",
+      "../static/fonts/NotoSans-Italic-VariableFont.ttf": "fonts/NotoSans-Italic-VariableFont.ttf"
+    }
   }
 }

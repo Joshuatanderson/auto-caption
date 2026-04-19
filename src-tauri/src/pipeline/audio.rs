@@ -3,8 +3,19 @@ use std::process::Command;
 
 use crate::pipeline::types::StageError;
 
-pub fn audio_output_path(input: &Path) -> PathBuf {
-    input.with_extension("wav")
+/// Where to write the extracted WAV. When `dest_dir` is `Some`, the wav lands
+/// at `<dest_dir>/<stem>.wav` (used for routing into an export folder's
+/// artifacts subdir). When `None`, keeps the legacy "next to input" behavior.
+pub fn audio_output_path(input: &Path, dest_dir: Option<&Path>) -> PathBuf {
+    match dest_dir {
+        Some(dir) => {
+            let stem = input.file_stem().unwrap_or_default();
+            let mut p = dir.join(stem);
+            p.set_extension("wav");
+            p
+        }
+        None => input.with_extension("wav"),
+    }
 }
 
 /// Builds the ffmpeg argument list for 16kHz mono WAV extraction. Pure function.
@@ -22,8 +33,8 @@ pub fn build_extract_audio_args(input: &Path, output: &Path) -> Vec<String> {
     ]
 }
 
-pub fn run_extract_audio(input: &Path) -> Result<PathBuf, StageError> {
-    let output = audio_output_path(input);
+pub fn run_extract_audio(input: &Path, dest_dir: Option<&Path>) -> Result<PathBuf, StageError> {
+    let output = audio_output_path(input, dest_dir);
     let args = build_extract_audio_args(input, &output);
 
     let result = Command::new("ffmpeg").args(&args).output().map_err(|e| StageError {
@@ -51,13 +62,34 @@ mod tests {
     #[test]
     fn audio_output_path_replaces_extension() {
         let input = Path::new("/tmp/video.mp4");
-        assert_eq!(audio_output_path(input), Path::new("/tmp/video.wav"));
+        assert_eq!(audio_output_path(input, None), Path::new("/tmp/video.wav"));
     }
 
     #[test]
     fn audio_output_path_no_extension() {
         let input = Path::new("/tmp/video");
-        assert_eq!(audio_output_path(input), Path::new("/tmp/video.wav"));
+        assert_eq!(audio_output_path(input, None), Path::new("/tmp/video.wav"));
+    }
+
+    #[test]
+    fn audio_output_path_with_dest_dir() {
+        let input = Path::new("/tmp/video.mp4");
+        let dest = Path::new("/exports/abc/artifacts");
+        assert_eq!(
+            audio_output_path(input, Some(dest)),
+            Path::new("/exports/abc/artifacts/video.wav"),
+        );
+    }
+
+    #[test]
+    fn audio_output_path_with_dest_dir_ignores_input_parent() {
+        // Even if the input is deep in the source tree, the dest dir wins.
+        let input = Path::new("/home/user/Movies/2025/clip.mp4");
+        let dest = Path::new("/outputs/run1/artifacts");
+        assert_eq!(
+            audio_output_path(input, Some(dest)),
+            Path::new("/outputs/run1/artifacts/clip.wav"),
+        );
     }
 
     #[test]
@@ -80,7 +112,7 @@ mod tests {
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let input = manifest.parent().unwrap().join("test-artifacts/sample.mp4");
         assert!(input.exists(), "test-artifacts/sample.mp4 not found");
-        let result = run_extract_audio(&input);
+        let result = run_extract_audio(&input, None);
         assert!(result.is_ok(), "extract_audio failed: {:?}", result.err());
     }
 }

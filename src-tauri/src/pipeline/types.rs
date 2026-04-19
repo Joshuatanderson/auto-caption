@@ -66,6 +66,18 @@ impl std::fmt::Display for StageError {
     }
 }
 
+/// Vertical placement of captions. Maps to ASS `Alignment` numpad values
+/// (Top=8, Middle=5, Bottom=2). `margin_v` is the distance from the reference
+/// edge for Top/Bottom and is effectively ignored for Middle (libass centers).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaptionPosition {
+    Top,
+    Middle,
+    #[default]
+    Bottom,
+}
+
 /// Style parameters for ASS subtitle generation.
 #[derive(Debug, Clone)]
 pub struct AssStyle {
@@ -76,6 +88,7 @@ pub struct AssStyle {
     pub outline_color: String,
     pub outline_width: f32,
     pub margin_v: u32,
+    pub position: CaptionPosition,
     pub words_per_phrase: usize,
     /// Lead-in before the first word of each phrase lights up, in milliseconds.
     /// Gives the viewer's eye time to find the new caption before any word
@@ -88,13 +101,14 @@ pub struct AssStyle {
 impl Default for AssStyle {
     fn default() -> Self {
         Self {
-            font_name: "Arial".to_string(),
+            font_name: "Noto Sans".to_string(),
             font_size: 72,
             primary_color: "&H00FFFFFF".to_string(),
             accent_color: "&H0000FFFF".to_string(),
             outline_color: "&H00000000".to_string(),
             outline_width: 3.0,
             margin_v: 80,
+            position: CaptionPosition::Bottom,
             words_per_phrase: 5,
             first_word_lead_in_ms: 100,
         }

@@ -19,13 +19,16 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::extract_audio,
-            commands::transcribe,
-            commands::generate_ass,
-            commands::burn_captions,
+            commands::run_pipeline,
             db::get_themes,
             db::get_current_theme,
             db::set_theme,
+            db::get_output_dir,
+            db::set_output_dir,
+            db::get_caption_position,
+            db::set_caption_position,
+            db::get_custom_ass_colors,
+            db::set_custom_ass_colors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
