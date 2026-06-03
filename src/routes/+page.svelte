@@ -244,6 +244,11 @@
 <main class="flex min-h-screen items-center justify-center bg-background p-8">
   <div class="flex w-full max-w-2xl flex-col gap-4">
 
+    <header class="flex flex-col items-center gap-1.5 pb-1">
+      <img src="/happycampr-wordmark.svg" alt="happycampr" class="h-6 w-auto opacity-90" />
+      <p class="text-xs font-medium tracking-wide text-muted-foreground">AutoCap</p>
+    </header>
+
     {#if depsMissing && depReport}
       <Card class="border-destructive/40 bg-destructive/5">
         <CardContent class="space-y-4 p-6">

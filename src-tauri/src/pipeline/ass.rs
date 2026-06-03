@@ -94,12 +94,19 @@ fn build_dialogue_line(
         .enumerate()
         .map(|(i, w)| {
             if Some(i) == accent_index {
-                format!(
-                    "{{\\c{accent}}}{}{{\\c{primary}}}",
-                    w.text,
-                    accent = style.accent_color,
-                    primary = style.primary_color,
-                )
+                if style.has_box() {
+                    // Opaque-chip themes: switch to the "Box" style for just this
+                    // word (libass draws the filled box behind its glyphs), then
+                    // `\r` resets to the line's Default style.
+                    format!("{{\\rBox}}{}{{\\r}}", w.text)
+                } else {
+                    format!(
+                        "{{\\c{accent}}}{}{{\\c{primary}}}",
+                        w.text,
+                        accent = style.accent_color,
+                        primary = style.primary_color,
+                    )
+                }
             } else {
                 w.text.clone()
             }
@@ -162,13 +169,19 @@ pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
 
     let mut out = String::new();
 
+    // Box themes get their pop from the opaque chip on the active word, so the
+    // soft accent halo is skipped — a glow under a solid chip just muddies it.
+    let glow = !style.has_box();
+
     if lead_in_ms > 0 {
-        out.push_str(&build_glow_line(
-            phrase_start_ms,
-            phrase_start_ms + lead_in_ms,
-            &phrase.words,
-            style,
-        ));
+        if glow {
+            out.push_str(&build_glow_line(
+                phrase_start_ms,
+                phrase_start_ms + lead_in_ms,
+                &phrase.words,
+                style,
+            ));
+        }
         out.push_str(&build_dialogue_line(
             1,
             phrase_start_ms,
@@ -193,7 +206,9 @@ pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
         if start >= end {
             continue;
         }
-        out.push_str(&build_glow_line(start, end, &phrase.words, style));
+        if glow {
+            out.push_str(&build_glow_line(start, end, &phrase.words, style));
+        }
         out.push_str(&build_dialogue_line(
             1,
             start,
@@ -209,6 +224,28 @@ pub fn phrase_to_ass_events(phrase: &Phrase, style: &AssStyle) -> String {
 /// Builds the ASS header block. Pure function. `play_res_x`/`play_res_y` must
 /// match the burn output dimensions so libass scales font/margins correctly.
 pub fn build_ass_header(style: &AssStyle, play_res_x: u32, play_res_y: u32) -> String {
+    let alignment = alignment_for(style.position);
+    // For box themes, define a second "Box" style. BorderStyle=3 = opaque box:
+    // libass fills a box (in OutlineColour) behind the text, sized by the Outline
+    // field — used here as box padding. PrimaryColour is the word color (accent).
+    // Same font/size/alignment/margins as Default so mid-line `\rBox`↔`\r` switches
+    // don't shift the line.
+    let box_style = if style.has_box() {
+        let box_pad = (style.outline_width * 2.5).max(6.0);
+        format!(
+            "Style: Box,{font},{size},{accent},&H000000FF,{box_color},&H00000000,\
+             -1,0,0,0,100,100,0,0,3,{box_pad:.1},0,{alignment},10,10,{margin_v},1\n",
+            font = style.font_name,
+            size = style.font_size,
+            accent = style.accent_color,
+            box_color = style.box_color,
+            box_pad = box_pad,
+            alignment = alignment,
+            margin_v = style.margin_v,
+        )
+    } else {
+        String::new()
+    };
     format!(
         "[Script Info]\n\
          ScriptType: v4.00+\n\
@@ -222,6 +259,7 @@ pub fn build_ass_header(style: &AssStyle, play_res_x: u32, play_res_y: u32) -> S
                  Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n\
          Style: Default,{font},{size},{primary},&H000000FF,{outline},&H00000000,\
                 -1,0,0,0,100,100,0,0,1,{outline_w:.1},0,{alignment},10,10,{margin_v},1\n\
+         {box_style}\
          \n\
          [Events]\n\
          Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n",
@@ -232,8 +270,9 @@ pub fn build_ass_header(style: &AssStyle, play_res_x: u32, play_res_y: u32) -> S
         primary = style.primary_color,
         outline = style.outline_color,
         outline_w = style.outline_width,
-        alignment = alignment_for(style.position),
+        alignment = alignment,
         margin_v = style.margin_v,
+        box_style = box_style,
     )
 }
 
@@ -699,5 +738,57 @@ mod tests {
         let ass = generate_ass(&output, &style, 1920, 1080);
         assert!(ass.starts_with("[Script Info]"));
         assert!(ass.contains("Dialogue:"));
+    }
+
+    // --- box (opaque chip) themes ---
+
+    fn box_style() -> AssStyle {
+        AssStyle {
+            box_color: "&H004C6B5A".to_string(), // moss chip
+            accent_color: "&H00E8F1F5".to_string(), // cream word
+            primary_color: "&H00F6FAFB".to_string(),
+            outline_color: "&H0010182B".to_string(),
+            first_word_lead_in_ms: 0,
+            ..AssStyle::default()
+        }
+    }
+
+    #[test]
+    fn box_theme_skips_glow_layer() {
+        let tokens: Vec<_> = (0..3).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let out = phrase_to_ass_events(&phrases[0], &box_style());
+        // The chip is the pop — no Layer-0 glow events for box themes.
+        assert_eq!(glow_lines(&out).len(), 0);
+        assert_eq!(sharp_lines(&out).len(), 3);
+    }
+
+    #[test]
+    fn box_theme_active_word_uses_rbox_switch() {
+        let tokens: Vec<_> = (0..3).map(|i| tok(" w", i * 500, (i + 1) * 500, 0.9)).collect();
+        let words = flatten_words(&make_output(tokens));
+        let phrases = words_to_phrases(&words, 5);
+        let out = phrase_to_ass_events(&phrases[0], &box_style());
+        // Each of the 3 word events boxes exactly one word via \rBox … \r.
+        assert_eq!(out.matches("{\\rBox}").count(), 3);
+        assert_eq!(out.matches("{\\r}").count(), 3);
+        // Box themes must NOT use the glow-style inline \c color switches.
+        assert!(!out.contains("\\c"));
+    }
+
+    #[test]
+    fn header_includes_box_style_when_boxed() {
+        let header = build_ass_header(&box_style(), 1920, 1080);
+        assert!(header.contains("Style: Box,"));
+        assert!(header.contains(",0,0,3,"), "Box style must use BorderStyle=3 (opaque box)");
+        assert!(header.contains("&H004C6B5A"), "box fill color present");
+        assert!(header.contains("&H00E8F1F5"), "boxed word color (accent) present");
+    }
+
+    #[test]
+    fn header_omits_box_style_for_glow_theme() {
+        let header = build_ass_header(&AssStyle::default(), 1920, 1080);
+        assert!(!header.contains("Style: Box,"));
     }
 }

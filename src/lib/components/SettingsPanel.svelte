@@ -30,7 +30,7 @@
   }
 
   let themes = $state<ThemeMeta[]>([]);
-  let currentSlug = $state('cantaloupe');
+  let currentSlug = $state('happycampr');
   let outputDir = $state<string | null>(null);
   let captionPosition = $state<CaptionPosition>('bottom');
   let panelOpen = $state(false);
@@ -67,7 +67,7 @@
   /**
    * Derive UI accent vars from the user's Inner caption color so buttons,
    * rings, and selection states track the custom theme instead of staying
-   * stuck on cantaloupe's green. Lightness tiers are produced via CSS
+   * stuck on the default Happycampr green. Lightness tiers are produced via CSS
    * color-mix so we don't reimplement OKLCH in TS.
    */
   function applyCustomOverrides(innerHex: string) {

@@ -86,6 +86,10 @@ pub struct AssStyle {
     pub primary_color: String,  // ASS hex: &H00FFFFFF (AABBGGRR)
     pub accent_color: String,   // active/highlight color the currently-spoken word flashes to (default &H0000FFFF yellow)
     pub outline_color: String,
+    /// When non-empty, the active word renders as an opaque "chip" (BorderStyle=3
+    /// box) filled with this color, with the word itself drawn in `accent_color`.
+    /// This is the high-pop karaoke-box look. Empty = classic glow+highlight style.
+    pub box_color: String,
     pub outline_width: f32,
     pub margin_v: u32,
     pub position: CaptionPosition,
@@ -106,12 +110,21 @@ impl Default for AssStyle {
             primary_color: "&H00FFFFFF".to_string(),
             accent_color: "&H0000FFFF".to_string(),
             outline_color: "&H00000000".to_string(),
+            box_color: String::new(),
             outline_width: 3.0,
             margin_v: 80,
             position: CaptionPosition::Bottom,
             words_per_phrase: 5,
             first_word_lead_in_ms: 100,
         }
+    }
+}
+
+impl AssStyle {
+    /// True when this theme uses the opaque "chip" box treatment for the active
+    /// word (BorderStyle=3) instead of the classic glow+highlight render.
+    pub fn has_box(&self) -> bool {
+        !self.box_color.is_empty()
     }
 }
 
