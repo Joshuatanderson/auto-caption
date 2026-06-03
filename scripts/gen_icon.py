@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Renders the AutoCap app icon at 1024×1024 using the app's own caption style:
-bold Noto Sans, "Auto" in primary (white), "Cap" in accent (cantaloupe mint),
-thick black outline, soft mint halo behind. Two-line layout for legibility at
-small sizes (32px).
+Renders the AutoCap app icon at 1024×1024 using the app's own caption style,
+in the Happycampr brand palette: bold Noto Sans, "Auto" in burnt, "Cap" in
+graham (the brand accent), burnt outline, soft graham halo behind, on a
+marshmallow ground. Two-line layout for legibility at small sizes (32px).
 
 Run: python3 scripts/gen_icon.py [optional_accent_hex]
 Outputs: icon-source.png in the repo root. Feed that into `bun run tauri icon`.
@@ -17,10 +17,10 @@ FONT_PATH = ROOT / "static" / "fonts" / "NotoSans-Bold.ttf"
 OUT_PATH = ROOT / "icon-source.png"
 
 CANVAS = 1024
-BG_COLOR = "#FDF6EC"          # warm cream; reads cleanly in both light & dark docks
-OUTLINE = "#0A0A0A"
-PRIMARY = "#FFFFFF"
-ACCENT = sys.argv[1] if len(sys.argv) > 1 else "#61C695"  # cantaloupe mint
+BG_COLOR = "#F5F1E8"          # marshmallow; Happycampr light surface, reads in both docks
+OUTLINE = "#2B1810"           # burnt
+PRIMARY = "#2B1810"           # burnt — "Auto"
+ACCENT = sys.argv[1] if len(sys.argv) > 1 else "#946334"  # graham — Happycampr brand accent
 
 CORNER_RADIUS = 180
 FONT_SIZE = 360
@@ -64,7 +64,7 @@ def main():
 
     img = Image.alpha_composite(img, glow)
 
-    # Sharp layer: white "Auto" + accent "Cap", both with black outline.
+    # Sharp layer: burnt "Auto" + graham "Cap", both with burnt outline.
     d = ImageDraw.Draw(img)
     d.text((auto_x, auto_y), "Auto", fill=PRIMARY, font=font,
            stroke_width=SHARP_STROKE, stroke_fill=OUTLINE)

@@ -197,6 +197,8 @@ pub async fn run_pipeline(
         let style = AssStyle {
             primary_color: colors.primary_color.clone(),
             accent_color: colors.accent_color.clone(),
+            outline_color: colors.outline_color.clone(),
+            box_color: colors.box_color.clone(),
             font_size: spec.font_size,
             margin_v: spec.margin_v,
             position,

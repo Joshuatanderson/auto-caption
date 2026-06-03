@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- AutoCap · Happycampr brand icon, tuned to the bright caption scheme.
+       burnt tile = stroke/footage · cream smile-square = caption text · lime smile = the highlight pop -->
+  <rect x="40" y="40" width="944" height="944" rx="216" fill="#2B1810"/>
+  <g transform="rotate(-8 512 512)">
+    <!-- the Happycampr smile-square "face", as a bright caption card frame -->
+    <rect x="300" y="306" width="424" height="412" rx="132" fill="none"
+          stroke="#F5F1E8" stroke-width="38" stroke-linejoin="round"/>
+    <!-- smile = caption highlight, in Camp Lime; pops hard on the dark interior -->
+    <path d="M 402 588 Q 512 690 622 588" fill="none"
+          stroke="#A6E22E" stroke-width="46" stroke-linecap="round"/>
+  </g>
+</svg>

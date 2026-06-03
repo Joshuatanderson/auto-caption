@@ -18,6 +18,22 @@ pub struct ThemeMeta {
 pub struct AssStyleColors {
     pub primary_color: String,
     pub accent_color: String,
+    /// Crisp stroke around every glyph. Theme-controlled so each theme can
+    /// "bring its own contrast" against any video background (light text wants
+    /// a dark edge; dark text wants a light edge) rather than relying on the
+    /// footage being a flattering color. `#[serde(default)]` keeps pre-outline
+    /// rows (e.g. an existing 'custom' theme) parsing — they fall back to black.
+    #[serde(default = "default_outline_color")]
+    pub outline_color: String,
+    /// Optional opaque "chip" box behind the active word (the high-pop karaoke
+    /// look). Empty string = no box (classic glow+highlight). `#[serde(default)]`
+    /// → "" so pre-box rows (old themes, 'custom') still parse.
+    #[serde(default)]
+    pub box_color: String,
+}
+
+fn default_outline_color() -> String {
+    "&H00000000".to_string()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,7 +55,7 @@ pub fn init(path: PathBuf) -> rusqlite::Result<Connection> {
         );
         CREATE TABLE IF NOT EXISTS user_preferences (
             id            INTEGER PRIMARY KEY CHECK (id = 1),
-            current_theme TEXT NOT NULL DEFAULT 'cantaloupe'
+            current_theme TEXT NOT NULL DEFAULT 'happycampr'
         );
         CREATE TABLE IF NOT EXISTS dep_paths (
             name TEXT PRIMARY KEY,
@@ -55,51 +71,162 @@ pub fn init(path: PathBuf) -> rusqlite::Result<Connection> {
     );
     seed_themes(&conn)?;
     conn.execute(
-        "INSERT OR IGNORE INTO user_preferences (id, current_theme) VALUES (1, 'cantaloupe')",
+        "INSERT OR IGNORE INTO user_preferences (id, current_theme) VALUES (1, 'happycampr')",
         [],
     )?;
+    // Migration: retire themes that are no longer seeded. seed_themes only
+    // INSERT-OR-REPLACEs the slugs it lists, so dropped slugs would otherwise
+    // linger as stale rows. Retired: 'cantaloupe' (old branding) and the muted
+    // glow set ('meadow','trail','espresso'), superseded by the bright box themes.
+    // Repoint anyone still on a retired theme to the green default.
+    let _ = conn.execute(
+        "DELETE FROM themes WHERE slug IN ('cantaloupe','meadow','trail','espresso')",
+        [],
+    );
+    let _ = conn.execute(
+        "UPDATE user_preferences SET current_theme = 'happycampr' \
+         WHERE current_theme IN ('cantaloupe','meadow','trail','espresso')",
+        [],
+    );
     Ok(conn)
 }
 
 fn seed_themes(conn: &Connection) -> rusqlite::Result<()> {
     // INSERT OR REPLACE so color updates always propagate on restart
     let themes: &[(&str, &str, &str, serde_json::Value, AssStyleColors)] = &[
+        // ── Happycampr brand themes ──────────────────────────────────────────
+        // Palette (Mimir design tokens): marshmallow #F5F1E8 · moss #5A6B4C ·
+        // graham #946334 · burnt #2B1810. ASS colors are &H00BBGGRR (BGR order):
+        //   marshmallow → &H00E8F1F5   moss   → &H004C6B5A
+        //   graham      → &H00346394   burnt  → &H0010182B   black → &H00000000
+        // Every theme pairs a light and a dark brand color across text / accent
+        // / outline so the caption stays WCAG-legible on any footage without
+        // leaning on the background.
         (
-            "cantaloupe",
-            "Cantaloupe",
-            "linear-gradient(135deg, #22c55e 0%, #16a34a 50%, #14532d 100%)",
+            "happycampr",
+            "Happycampr",
+            // moss chip (box) + cream word
+            "linear-gradient(135deg, #5A6B4C 0% 60%, #F5F1E8 60% 100%)",
             serde_json::json!({
-                "--background":            "oklch(1 0 0)",
-                "--foreground":            "oklch(0.17 0.01 264)",
-                "--card":                  "oklch(1 0 0)",
-                "--card-foreground":       "oklch(0.17 0.01 264)",
-                "--popover":               "oklch(1 0 0)",
-                "--popover-foreground":    "oklch(0.17 0.01 264)",
-                "--primary":               "oklch(0.58 0.17 145)",
-                "--primary-foreground":    "oklch(1 0 0)",
-                "--secondary":             "oklch(0.96 0.04 145)",
-                "--secondary-foreground":  "oklch(0.35 0.09 148)",
-                "--muted":                 "oklch(0.96 0.04 145)",
-                "--muted-foreground":      "oklch(0.52 0.01 264)",
-                "--accent":                "oklch(0.93 0.07 148)",
-                "--accent-foreground":     "oklch(0.35 0.09 148)",
+                "--background":            "oklch(0.97 0.012 87)",
+                "--foreground":            "oklch(0.23 0.034 43.5)",
+                "--card":                  "oklch(0.98 0.008 87)",
+                "--card-foreground":       "oklch(0.23 0.034 43.5)",
+                "--popover":               "oklch(0.98 0.008 87)",
+                "--popover-foreground":    "oklch(0.23 0.034 43.5)",
+                "--primary":               "oklch(0.5048 0.0516 131.41)",
+                "--primary-foreground":    "oklch(0.97 0.012 87)",
+                "--secondary":             "oklch(0.92 0.022 120)",
+                "--secondary-foreground":  "oklch(0.36 0.045 131)",
+                "--muted":                 "oklch(0.93 0.015 90)",
+                "--muted-foreground":      "oklch(0.48 0.03 55)",
+                "--accent":                "oklch(0.90 0.032 125)",
+                "--accent-foreground":     "oklch(0.36 0.045 131)",
                 "--destructive":           "oklch(0.577 0.245 27.325)",
-                "--border":                "oklch(0.91 0.06 148)",
-                "--input":                 "oklch(0.91 0.06 148)",
-                "--ring":                  "oklch(0.70 0.19 148)",
-                "--sidebar":               "oklch(0.99 0.01 148)",
-                "--sidebar-foreground":    "oklch(0.17 0.01 264)",
-                "--sidebar-primary":       "oklch(0.52 0.16 145)",
-                "--sidebar-primary-foreground": "oklch(1 0 0)",
-                "--sidebar-accent":        "oklch(0.93 0.07 148)",
-                "--sidebar-accent-foreground": "oklch(0.35 0.09 148)",
-                "--sidebar-border":        "oklch(0.91 0.06 148)",
-                "--sidebar-ring":          "oklch(0.70 0.19 148)"
+                "--border":                "oklch(0.88 0.02 100)",
+                "--input":                 "oklch(0.88 0.02 100)",
+                "--ring":                  "oklch(0.5048 0.0516 131.41)",
+                "--sidebar":               "oklch(0.95 0.013 90)",
+                "--sidebar-foreground":    "oklch(0.23 0.034 43.5)",
+                "--sidebar-primary":       "oklch(0.5048 0.0516 131.41)",
+                "--sidebar-primary-foreground": "oklch(0.97 0.012 87)",
+                "--sidebar-accent":        "oklch(0.90 0.032 125)",
+                "--sidebar-accent-foreground": "oklch(0.36 0.045 131)",
+                "--sidebar-border":        "oklch(0.88 0.02 100)",
+                "--sidebar-ring":          "oklch(0.5048 0.0516 131.41)"
             }),
-            // Captions: white text, product green-500 accent (#22C55E → ASS BBGGRR = 5EC522)
+            // BOX style — near-white text, burnt edge, moss chip behind the active
+            // word with a cream word inside. word/chip 5.1:1 (AA). The on-brand default.
             AssStyleColors {
-                primary_color: "&H00FFFFFF".to_string(),
-                accent_color: "&H005EC522".to_string(),
+                primary_color: "&H00F6FAFB".to_string(),
+                accent_color: "&H00E8F1F5".to_string(),
+                outline_color: "&H0010182B".to_string(),
+                box_color: "&H004C6B5A".to_string(),
+            },
+        ),
+        (
+            "graham",
+            "Graham",
+            // graham chip (box) + cream word
+            "linear-gradient(135deg, #946334 0% 60%, #F5F1E8 60% 100%)",
+            serde_json::json!({
+                "--background":            "oklch(0.97 0.014 80)",
+                "--foreground":            "oklch(0.23 0.034 43.5)",
+                "--card":                  "oklch(0.98 0.01 80)",
+                "--card-foreground":       "oklch(0.23 0.034 43.5)",
+                "--popover":               "oklch(0.98 0.01 80)",
+                "--popover-foreground":    "oklch(0.23 0.034 43.5)",
+                "--primary":               "oklch(0.5423 0.0893 62.79)",
+                "--primary-foreground":    "oklch(0.97 0.012 87)",
+                "--secondary":             "oklch(0.93 0.03 72)",
+                "--secondary-foreground":  "oklch(0.38 0.06 62)",
+                "--muted":                 "oklch(0.93 0.02 75)",
+                "--muted-foreground":      "oklch(0.48 0.04 60)",
+                "--accent":                "oklch(0.91 0.04 68)",
+                "--accent-foreground":     "oklch(0.38 0.06 62)",
+                "--destructive":           "oklch(0.577 0.245 27.325)",
+                "--border":                "oklch(0.88 0.025 72)",
+                "--input":                 "oklch(0.88 0.025 72)",
+                "--ring":                  "oklch(0.5423 0.0893 62.79)",
+                "--sidebar":               "oklch(0.95 0.018 76)",
+                "--sidebar-foreground":    "oklch(0.23 0.034 43.5)",
+                "--sidebar-primary":       "oklch(0.5423 0.0893 62.79)",
+                "--sidebar-primary-foreground": "oklch(0.97 0.012 87)",
+                "--sidebar-accent":        "oklch(0.91 0.04 68)",
+                "--sidebar-accent-foreground": "oklch(0.38 0.06 62)",
+                "--sidebar-border":        "oklch(0.88 0.025 72)",
+                "--sidebar-ring":          "oklch(0.5423 0.0893 62.79)"
+            }),
+            // BOX style — near-white text, burnt edge, caramel (graham) chip behind
+            // the active word with a cream word inside. word/chip 4.6:1 (AA).
+            AssStyleColors {
+                primary_color: "&H00F6FAFB".to_string(),
+                accent_color: "&H00E8F1F5".to_string(),
+                outline_color: "&H0010182B".to_string(),
+                box_color: "&H00346394".to_string(),
+            },
+        ),
+        (
+            "gold",
+            "Gold",
+            // burnt chip (box) + bright gold word
+            "linear-gradient(135deg, #2B1810 0% 60%, #FFC53D 60% 100%)",
+            serde_json::json!({
+                "--background":            "oklch(0.19 0.018 50)",
+                "--foreground":            "oklch(0.95 0.02 90)",
+                "--card":                  "oklch(0.23 0.02 50)",
+                "--card-foreground":       "oklch(0.95 0.02 90)",
+                "--popover":               "oklch(0.23 0.02 50)",
+                "--popover-foreground":    "oklch(0.95 0.02 90)",
+                "--primary":               "oklch(0.85 0.16 85)",
+                "--primary-foreground":    "oklch(0.18 0.02 50)",
+                "--secondary":             "oklch(0.27 0.025 55)",
+                "--secondary-foreground":  "oklch(0.95 0.02 90)",
+                "--muted":                 "oklch(0.27 0.025 55)",
+                "--muted-foreground":      "oklch(0.78 0.06 85)",
+                "--accent":                "oklch(0.30 0.03 60)",
+                "--accent-foreground":     "oklch(0.95 0.02 90)",
+                "--destructive":           "oklch(0.704 0.191 22.216)",
+                "--border":                "oklch(1 0 0 / 12%)",
+                "--input":                 "oklch(1 0 0 / 15%)",
+                "--ring":                  "oklch(0.85 0.16 85)",
+                "--sidebar":               "oklch(0.23 0.02 50)",
+                "--sidebar-foreground":    "oklch(0.95 0.02 90)",
+                "--sidebar-primary":       "oklch(0.85 0.16 85)",
+                "--sidebar-primary-foreground": "oklch(0.18 0.02 50)",
+                "--sidebar-accent":        "oklch(0.30 0.03 60)",
+                "--sidebar-accent-foreground": "oklch(0.95 0.02 90)",
+                "--sidebar-border":        "oklch(1 0 0 / 12%)",
+                "--sidebar-ring":          "oklch(0.85 0.16 85)"
+            }),
+            // BOX style — near-white text, burnt chip behind the active word with a
+            // bright gold word inside. word/chip 10.7:1 (AAA). Closest to the classic
+            // creator-caption look, kept on Happycampr's warm side.
+            AssStyleColors {
+                primary_color: "&H00F6FAFB".to_string(),
+                accent_color: "&H003DC5FF".to_string(),
+                outline_color: "&H0010182B".to_string(),
+                box_color: "&H0010182B".to_string(),
             },
         ),
         (
@@ -134,10 +261,12 @@ fn seed_themes(conn: &Connection) -> rusqlite::Result<()> {
                 "--sidebar-border":        "oklch(1 0 0 / 12%)",
                 "--sidebar-ring":          "oklch(0.65 0.15 285)"
             }),
-            // Captions: white text, violet accent (#8B5CF6 → ASS BBGGRR = F65C8B)
+            // Captions: white text, violet accent (#8B5CF6 → ASS BBGGRR = F65C8B). Glow style.
             AssStyleColors {
                 primary_color: "&H00FFFFFF".to_string(),
                 accent_color: "&H00F65C8B".to_string(),
+                outline_color: "&H00000000".to_string(),
+                box_color: String::new(),
             },
         ),
         (
@@ -172,10 +301,12 @@ fn seed_themes(conn: &Connection) -> rusqlite::Result<()> {
                 "--sidebar-border":        "oklch(0.12 0.02 100)",
                 "--sidebar-ring":          "oklch(0.87 0.20 95)"
             }),
-            // Captions: white text, bright yellow accent (the original default look)
+            // Captions: white text, bright yellow accent (the original default look). Glow style.
             AssStyleColors {
                 primary_color: "&H00FFFFFF".to_string(),
                 accent_color: "&H0000FFFF".to_string(),
+                outline_color: "&H00000000".to_string(),
+                box_color: String::new(),
             },
         ),
     ];
@@ -190,16 +321,18 @@ fn seed_themes(conn: &Connection) -> rusqlite::Result<()> {
     }
 
     // 'custom' row is user-editable — INSERT OR IGNORE so customizations persist.
-    // CSS vars mirror cantaloupe so the surrounding UI stays coherent; caption
+    // CSS vars mirror happycampr so the surrounding UI stays coherent; caption
     // colors start at white+yellow and are overridden via set_custom_ass_colors.
     let custom_css_vars = themes
         .iter()
-        .find(|(s, ..)| *s == "cantaloupe")
+        .find(|(s, ..)| *s == "happycampr")
         .map(|(_, _, _, v, _)| v.to_string())
         .unwrap_or_else(|| "{}".to_string());
     let custom_ass = AssStyleColors {
         primary_color: "&H00FFFFFF".to_string(),
         accent_color: "&H0000FFFF".to_string(),
+        outline_color: "&H00000000".to_string(),
+        box_color: String::new(),
     };
     conn.execute(
         "INSERT OR IGNORE INTO themes (slug, name, swatch, css_vars, ass_style)
@@ -263,7 +396,7 @@ pub fn current_ass_style(conn: &Connection) -> AssStyleColors {
             [],
             |row| row.get(0),
         )
-        .unwrap_or_else(|_| "cantaloupe".to_string());
+        .unwrap_or_else(|_| "happycampr".to_string());
 
     conn.query_row(
         "SELECT ass_style FROM themes WHERE slug = ?1",
@@ -276,16 +409,32 @@ pub fn current_ass_style(conn: &Connection) -> AssStyleColors {
     .unwrap_or_else(|| AssStyleColors {
         primary_color: "&H00FFFFFF".to_string(),
         accent_color: "&H0000FFFF".to_string(),
+        outline_color: "&H00000000".to_string(),
+        box_color: String::new(),
     })
+}
+
+/// Fixed display order for the theme picker. Built-ins sort by this list;
+/// rowid can't be trusted because INSERT-OR-REPLACE reseeding and the
+/// Cantaloupe→Happycampr migration reshuffle it. Unknown slugs fall after the
+/// known ones (but before 'custom', which is pinned last by its high index).
+fn theme_sort_index(slug: &str) -> usize {
+    const ORDER: &[&str] = &[
+        "happycampr", "graham", "gold", "obsidian", "yellow", "custom",
+    ];
+    ORDER
+        .iter()
+        .position(|s| *s == slug)
+        .unwrap_or(ORDER.len() - 1)
 }
 
 #[tauri::command]
 pub fn get_themes(state: tauri::State<DbState>) -> Result<Vec<ThemeMeta>, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = db
-        .prepare("SELECT slug, name, swatch FROM themes ORDER BY rowid")
+        .prepare("SELECT slug, name, swatch FROM themes")
         .map_err(|e| e.to_string())?;
-    let themes = stmt
+    let mut themes = stmt
         .query_map([], |row| {
             Ok(ThemeMeta {
                 slug: row.get(0)?,
@@ -296,6 +445,7 @@ pub fn get_themes(state: tauri::State<DbState>) -> Result<Vec<ThemeMeta>, String
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    themes.sort_by_key(|t| theme_sort_index(&t.slug));
     Ok(themes)
 }
 
@@ -308,7 +458,7 @@ pub fn get_current_theme(state: tauri::State<DbState>) -> Result<ThemeData, Stri
             [],
             |row| row.get(0),
         )
-        .unwrap_or_else(|_| "cantaloupe".to_string());
+        .unwrap_or_else(|_| "happycampr".to_string());
 
     let (name, css_vars_str, ass_style_str): (String, String, Option<String>) = db
         .query_row(
@@ -326,6 +476,8 @@ pub fn get_current_theme(state: tauri::State<DbState>) -> Result<ThemeData, Stri
         .unwrap_or_else(|| AssStyleColors {
             primary_color: "&H00FFFFFF".to_string(),
             accent_color: "&H0000FFFF".to_string(),
+            outline_color: "&H00000000".to_string(),
+            box_color: String::new(),
         });
 
     Ok(ThemeData {
@@ -458,6 +610,8 @@ pub fn get_custom_ass_colors(
         .unwrap_or_else(|| AssStyleColors {
             primary_color: "&H00FFFFFF".to_string(),
             accent_color: "&H0000FFFF".to_string(),
+            outline_color: "&H00000000".to_string(),
+            box_color: String::new(),
         });
     Ok(CustomAssColors {
         primary_hex: ass_to_hex(&ass.primary_color).unwrap_or_else(|| "#FFFFFF".to_string()),
@@ -478,6 +632,10 @@ pub fn set_custom_ass_colors(
     let ass_json = serde_json::to_string(&AssStyleColors {
         primary_color: primary_ass,
         accent_color: accent_ass,
+        // Custom captions keep the standard black edge (the picker exposes only
+        // the inner/outer fill colors, not the stroke) and the glow style (no box).
+        outline_color: "&H00000000".to_string(),
+        box_color: String::new(),
     })
     .map_err(|e| e.to_string())?;
     let swatch = format!(
